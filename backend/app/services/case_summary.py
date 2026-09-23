@@ -1,0 +1,54 @@
+import json
+from functools import lru_cache
+
+import pandas as pd
+
+from app.core.beeline import agent_directory, RUN_TIMEOUT_SECONDS
+
+
+@lru_cache
+def get_case_summary() -> dict:
+    directory = agent_directory()
+    from environment import MAX_PILOTS, MIN_PILOT_CUSTOMERS, MAX_PILOT_CUSTOMERS
+    from scoring_core import CHANNELS, TOTAL_BUDGET, MAX_TOTAL_CONTACTS
+    from scoring_core import MAX_CAMPAIGNS, MAX_CUSTOMERS_PER_CAMPAIGN
+
+    profile = pd.read_csv(directory / "customer_profile.csv")
+    tariffs = pd.read_csv(directory / "tariff_dictionary.csv")
+    manifest = json.loads((directory / "manifest.json").read_text())
+    segments = {}
+    for column in ("arpu_segment", "data_segment", "call_segment", "current_tariff"):
+        groups = profile.groupby(column, dropna=False).agg(
+            customers=("ID_NUMBER", "size"),
+            mean_predicted_arpu=("predicted_arpu", "mean"),
+            total_predicted_arpu=("predicted_arpu", "sum"),
+        ).reset_index()
+        segments[column] = json.loads(groups.to_json(orient="records"))
+    return {
+        "case": "Beeline tariff marketing campaigns",
+        "environment": "official_mock",
+        "synthetic_data": True,
+        "agent_sha256": manifest["agent.py"],
+        "customers": len(profile),
+        "baseline_total_arpu": float(profile["predicted_arpu"].sum()),
+        "mean_predicted_arpu": float(profile["predicted_arpu"].mean()),
+        "tariffs": json.loads(tariffs.to_json(orient="records")),
+        "segments": segments,
+        "channels": CHANNELS,
+        "data_quality": {
+            "missing_current_tariff": int(profile["current_tariff"].isna().sum()),
+            "missing_arpu_segment": int(profile["arpu_segment"].isna().sum()),
+            "zero_predicted_arpu": int((profile["predicted_arpu"].fillna(0) <= 0).sum()),
+        },
+        "constraints": {
+            "max_campaigns": MAX_CAMPAIGNS,
+            "max_campaign_size": MAX_CUSTOMERS_PER_CAMPAIGN,
+            "max_contacts": MAX_TOTAL_CONTACTS,
+            "budget": TOTAL_BUDGET,
+            "max_pilots": MAX_PILOTS,
+            "min_pilot_size": MIN_PILOT_CUSTOMERS,
+            "max_pilot_size": MAX_PILOT_CUSTOMERS,
+            "max_runtime_seconds": RUN_TIMEOUT_SECONDS,
+            "pilots_consume_budget_and_contacts": True,
+        },
+    }

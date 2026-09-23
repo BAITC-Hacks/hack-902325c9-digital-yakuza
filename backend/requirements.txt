@@ -8,3 +8,5 @@ pydantic==2.13.5
 pydantic-settings==2.15.0
 python-dotenv==1.2.3
 openai==2.54.0
+numpy==2.2.4
+pandas==2.2.3
