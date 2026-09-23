@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -15,6 +16,17 @@ from app.models.agent_run import AgentRun, CampaignResult, PilotResult
 from app.services.agent_worker import decision_info
 
 logger = logging.getLogger(__name__)
+
+
+def redact_secrets(value, secrets):
+    if isinstance(value, dict):
+        return {redact_secrets(key, secrets): redact_secrets(item, secrets) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_secrets(item, secrets) for item in value]
+    if isinstance(value, str):
+        for secret in secrets:
+            value = value.replace(secret, "[REDACTED]")
+    return value
 
 
 async def save_event(run_id: UUID, kind: str, data) -> None:
@@ -80,10 +92,21 @@ async def explain_run(run_id: UUID) -> None:
     agent_directory()
     import workflow
     explanation = await asyncio.to_thread(workflow.explain_result, result, True)
+    explanation = redact_secrets(explanation, sorted(
+        {os.environ[name] for name in workflow.KEY_NAMES if os.environ.get(name)},
+        key=len, reverse=True,
+    ))
+    report = explanation.get("explanation") or {}
+    explanation = {
+        **explanation,
+        **{key: report[key] for key in ("source", "rendered", "fallback_reason") if key in report},
+    }
+    rendered = report.get("rendered") or {}
     async with session_factory() as db:
         run = await db.get(AgentRun, run_id)
         if run is not None:
             run.explanation = explanation
+            run.metrics = {**(run.metrics or {}), "warnings": rendered.get("warnings", [])}
             await db.commit()
 
 
@@ -126,8 +149,8 @@ async def execute_run(run_id: UUID, seed: int) -> None:
             await complete_run(run_id, result)            # план сохранён
             try:
                 await explain_run(run_id)                 # объяснение — отдельно, после плана
-            except Exception:
-                logger.exception("Explanation for run %s failed; the saved plan is unaffected", run_id)
+            except Exception as exc:
+                logger.error("Explanation for run %s failed (%s); the saved plan is unaffected", run_id, type(exc).__name__)
         except TimeoutError:
             if process.returncode is None:
                 try:

@@ -3,7 +3,7 @@ from functools import lru_cache
 
 import pandas as pd
 
-from app.core.beeline import agent_directory, agent_sha256, RUN_TIMEOUT_SECONDS
+from app.core.beeline import agent_directory, agent_version, RUN_TIMEOUT_SECONDS
 
 
 @lru_cache
@@ -28,7 +28,7 @@ def get_case_summary() -> dict:
         "case": "Beeline tariff marketing campaigns",
         "environment": "official_mock",
         "synthetic_data": True,
-        "agent_sha256": agent_sha256(),
+        **agent_version(),
         "strategy": {
             **{
                 field: getattr(agent, constant)
@@ -41,6 +41,19 @@ def get_case_summary() -> dict:
                     "fallback_channel": "FALLBACK_CHANNEL",
                     "prior_format": "PRIOR_FORMAT",
                     "prior_mode": "PRIOR_MODE",
+                    "channel_economics": "CHANNEL_ECONOMICS",
+                    "risk_k": "RISK_K",
+                    "prior_shrink": "PRIOR_SHRINK",
+                    "transfer_sd": "TRANSFER_SD",
+                    "pilot_n_large": "PILOT_N_LARGE",
+                    "pilot_n_small": "PILOT_N_SMALL",
+                    "small_segment": "SMALL_SEGMENT",
+                    "fallback_risk_k": "FALLBACK_RISK_K",
+                    "max_campaigns": "MAX_CAMPAIGNS",
+                    "max_per_campaign": "MAX_PER_CAMPAIGN",
+                    "min_candidate_size": "MIN_CANDIDATE_SIZE",
+                    "pilot_repeat_only_if_unclear": "PILOT_REPEAT_ONLY_IF_UNCLEAR",
+                    "explore_unseen": "EXPLORE_UNSEEN",
                 }.items() if hasattr(agent, constant)
             },
             "max_pilots": MAX_PILOTS,

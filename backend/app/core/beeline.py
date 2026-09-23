@@ -41,3 +41,16 @@ def agent_directory() -> Path:
 
 def agent_sha256() -> str:
     return hashlib.sha256((agent_directory() / "agent.py").read_bytes()).hexdigest()
+
+
+def agent_version() -> dict:
+    source = (agent_directory() / "agent.py").read_bytes()
+    raw = hashlib.sha256(source).hexdigest()
+    normalized = hashlib.sha256(source.replace(b"\r\n", b"\n")).hexdigest()
+    expected = get_settings().expected_agent_sha256.lower()
+    return {
+        "agent_sha256": raw,
+        "agent_sha256_lf": normalized,
+        "expected_agent_sha256": expected,
+        "agent_status": "CURRENT" if expected in {raw, normalized} else "OUTDATED",
+    }

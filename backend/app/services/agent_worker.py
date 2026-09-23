@@ -7,7 +7,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from app.core.beeline import agent_directory, agent_sha256, RUN_TIMEOUT_SECONDS
+from app.core.beeline import agent_directory, agent_version, RUN_TIMEOUT_SECONDS
 
 
 def json_safe(value):
@@ -39,13 +39,13 @@ def observed_agent(agent_class, env):
                 }
                 if "candidate" in data:
                     update["candidate_id"] = data["candidate"]
+                    update["candidate"] = data["candidate"]
                 emit("pilot_update", {"sequence": len(env.pilot_history), **update})
 
     return ObservedAgent(verbose=False)
 
 
-def decision_info(trace):
-    warnings = []
+def decision_info(trace, pilots_left=None):
     stop_reason = None
     fallback_reason = None
     fallback = None
@@ -54,22 +54,16 @@ def decision_info(trace):
         kind = event.get("kind")
         if kind == "explore_stop":
             stop_reason = event.get("reason")
-            warnings.append({"code": "partial_exploration", "event": event})
-        elif kind in {"error", "pilot_error", "fallback_error", "minimal_error"}:
-            warnings.append({"code": "recoverable_error", "event": event})
-            if kind == "error":
-                recovered = True
-                fallback_reason = event.get("error")
-        elif kind in {"plan_drop", "minimal_skip"}:
-            warnings.append({"code": "strategy_warning", "event": event})
+        elif kind == "error":
+            recovered = True
+            fallback_reason = event.get("error")
         elif kind == "minimal_campaign":
             fallback = event
             fallback_reason = event.get("reason")
-            warnings.append({"code": "fallback_used", "event": event})
-    if recovered and fallback is None:
-        warnings.append({"code": "fallback_used", "reason": fallback_reason})
+    if stop_reason is None and pilots_left == 0:
+        stop_reason = "израсходованы все пилоты"
     info = {
-        "warnings": warnings,
+        "warnings": [],
         "stop_reason": stop_reason,
         "is_fallback": recovered or fallback is not None,
         "fallback_reason": fallback_reason,
@@ -81,13 +75,15 @@ def decision_info(trace):
             for key in ("mu", "sd", "downside", "exposure_arpu", "expected_gain")
             if key in fallback
         }
+    elif not recovered:
+        info["estimate_source"] = "пилоты"
     return info
 
 
 def run(seed):
     started = time.monotonic()
     directory = agent_directory()
-    version = agent_sha256()
+    version = agent_version()
     from agent import Agent
     from environment import MAX_PILOTS, MIN_PILOT_CUSTOMERS, MAX_PILOT_CUSTOMERS
     from make_submission import CAMPAIGN_COLUMNS
@@ -160,7 +156,7 @@ def run(seed):
         {**campaign, **detail}
         for campaign, detail in zip(campaigns, details[len(pilots):])
     ]
-    info = decision_info(agent.trace)
+    info = decision_info(agent.trace, env.pilots_left)
     if info["is_fallback"]:
         for campaign in finals:
             campaign.update({
@@ -168,6 +164,15 @@ def run(seed):
                 for key in ("is_fallback", "fallback_reason", "estimate_source", "risk_info")
                 if key in info
             })
+    else:
+        selected = [event for event in agent.trace if event["kind"] == "plan_add"]
+        if len(selected) == len(finals):
+            for campaign, event in zip(finals, selected):
+                campaign["estimate_source"] = "пилоты"
+                campaign["candidate_id"] = event["candidate"]
+                campaign["risk_info"] = {
+                    key: event[key] for key in ("mu", "lcb") if key in event
+                }
     csv = pd.DataFrame(campaigns).reindex(columns=CAMPAIGN_COLUMNS).to_csv(index=False)
     emit("result", {
         "campaigns": finals,
@@ -184,7 +189,7 @@ def run(seed):
             "remaining_budget": env.total_budget - score["total_cost"],
             "remaining_contacts": env.max_total_contacts - score["total_contacts"],
             "elapsed_seconds": elapsed,
-            "agent_sha256": version,
+            **version,
         },
     })
 

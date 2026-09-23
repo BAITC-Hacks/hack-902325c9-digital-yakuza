@@ -16,6 +16,7 @@ from app.core.beeline import agent_directory
 from app.core.database import engine, get_database_url, session_factory
 from app.models.agent_run import AgentRun, CampaignResult, PilotResult
 from app.services.agent_worker import decision_info, observed_agent
+from app.services.agent_runs import redact_secrets
 
 
 def request(path, payload=None):
@@ -41,10 +42,16 @@ def check_contract(run, pilots):
     assert isinstance(run["metrics"], dict)
     assert isinstance(run["warnings"], list)
     assert run["warnings"] == run["metrics"]["warnings"]
+    assert run["explanation"] is not None
+    report = run["explanation"]["explanation"]
+    assert run["explanation"]["source"] == report["source"]
+    assert run["explanation"]["rendered"] == report["rendered"]
+    assert report["source"] in {"llm", "template", "unavailable"}
+    assert run["warnings"] == (report.get("rendered") or {}).get("warnings", [])
     for pilot in pilots:
         for field in (
             "sequence", "hypothesis", "segment", "target_tariff", "channel",
-            "pilot_size", "observed_lift", "cost", "mu", "sd", "lcb", "candidate_id",
+            "pilot_size", "observed_lift", "cost", "mu", "sd", "lcb", "candidate_id", "candidate",
         ):
             assert field in pilot, field
         assert isinstance(pilot["sequence"], int)
@@ -55,6 +62,7 @@ def check_contract(run, pilots):
     assert len(events) == len(pilots)
     for event, pilot in zip(events, pilots):
         assert pilot["candidate_id"] == event["candidate"]
+        assert pilot["candidate"] == event["candidate"]
         for field in ("mu", "sd", "lcb"):
             assert pilot[field] == event[field]
     for campaign in run["campaigns"]:
@@ -75,6 +83,7 @@ async def check_database(run, pilots):
         assert saved.trace == run["trace"]
         assert saved.metrics == run["metrics"]
         assert saved.submission_csv
+        assert saved.explanation == run["explanation"]
         for model, expected in ((PilotResult, pilots), (CampaignResult, run["campaigns"])):
             rows = await db.scalars(select(model).where(model.run_id == run_id).order_by(model.sequence))
             assert [row.payload for row in rows] == expected
@@ -94,12 +103,33 @@ def check_fallback(agent_class, make_env):
     info = decision_info(adapter.trace)
     assert len(campaigns) == 1 and campaigns[0]["channel"] == "push"
     assert info["is_fallback"] and info["fallback_reason"]
-    assert {row["code"] for row in info["warnings"]} >= {"fallback_used", "recoverable_error"}
+    assert info["warnings"] == []
     event = next(row for row in adapter.trace if row["kind"] == "minimal_campaign")
     assert info["estimate_source"] == event["estimate"]
     assert all(value == event[key] for key, value in info["risk_info"].items())
     assert [data for kind, data in emitted if kind == "decision"] == adapter.trace
     assert len([1 for kind, _ in emitted if kind == "pilot_update"]) == len(env.pilot_history)
+
+
+def check_explanation_failure(run, pilots):
+    import workflow
+    token = "local-check-secret-do-not-store"
+    result = {
+        "campaigns": run["campaigns"], "pilots": pilots, "trace": run["trace"],
+        "metrics": run["metrics"],
+        "total_budget": run["metrics"]["total_cost"] + run["metrics"]["remaining_budget"],
+    }
+    before = json.dumps(result, sort_keys=True)
+    with patch.dict(os.environ, {"AGENT_LLM": "1", "OPENAI_API_KEY": token}), \
+            patch.object(workflow, "_make_client", side_effect=RuntimeError(token)), \
+            patch.object(workflow.Agent, "act", side_effect=AssertionError("Agent must not run again")) as act:
+        explanation = workflow.explain_result(result, use_llm=True)
+        assert act.call_count == 0
+    assert explanation["explanation"]["source"] == "template"
+    assert before == json.dumps(result, sort_keys=True)
+    safe = redact_secrets(explanation, [token])
+    assert token not in json.dumps(safe)
+    assert safe["explanation"]["rendered"]["warnings"] == explanation["explanation"]["rendered"]["warnings"]
 
 
 def main():
@@ -130,6 +160,10 @@ def main():
     assert strategy["max_pilot_budget_fraction"] == agent.EXPLORE_BUDGET_SHARE
     assert strategy["max_pilot_contacts_fraction"] == agent.EXPLORE_CONTACT_SHARE
     assert strategy["exploration_timeout_seconds"] == agent.TIME_BUDGET_S
+    assert strategy["channel_economics"] == agent.CHANNEL_ECONOMICS
+    assert strategy["risk_k"] == agent.RISK_K
+    assert summary["agent_status"] == "CURRENT"
+    assert summary["agent_sha256_lf"] == hashlib.sha256((directory / "agent.py").read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     status, run = request("/api/agent/run", {"seed": SUBMISSION_SEED})
     assert status == 202
     run_id = run["run_id"]
@@ -140,6 +174,11 @@ def main():
         time.sleep(0.05)
         _, run = request(f"/api/agent/result?run_id={run_id}")
         incremental |= run["status"] == "running" and bool(run["trace"])
+    explanation_deadline = time.monotonic() + 180
+    while run["status"] == "completed" and run.get("explanation") is None:
+        assert time.monotonic() < explanation_deadline, "Explanation timed out"
+        time.sleep(0.1)
+        _, run = request(f"/api/agent/result?run_id={run_id}")
     _, pilot_response = request(f"/api/agent/pilots?run_id={run_id}")
     pilots = pilot_response["pilots"]
     check_contract(run, pilots)
@@ -152,8 +191,23 @@ def main():
         assert run["metrics"][key] == official[key], key
     expected = build_submission(agent.Agent(verbose=False)).to_csv(index=False)
     assert csv.decode() == expected
+    assert csv.decode().replace("\r\n", "\n") == (directory / "submission.csv").read_text(encoding="utf-8")
     assert list(pd.read_csv(io.BytesIO(csv)).columns) == CAMPAIGN_COLUMNS
+    assert [c["channel"] for c in run["campaigns"]] == ["sms", "digital_ads", "sms", "sms", "digital_ads"]
+    assert len(run["campaigns"]) == 5 and len(pilots) == 20
+    assert run["metrics"]["total_cost"] == 95094
+    assert run["metrics"]["total_contacts"] == 13320
+    assert round(run["metrics"]["net_arpu_gain"]) == 5165453
+    channels = [event for event in run["trace"] if event["kind"] == "channels"]
+    assert channels and "budget_left" in channels[-1]
+    for campaign in run["campaigns"]:
+        assert channels[-1]["assigned"][campaign["candidate_id"]] == campaign["channel"]
+    assert run["explanation"]["campaign_pilot_links"] == {
+        "C1": ["P5", "P6"], "C2": ["P13", "P14"], "C3": ["P15", "P16"],
+        "C4": ["P7", "P8"], "C5": ["P9", "P10"],
+    }
     check_fallback(agent.Agent, make_mock_env)
+    check_explanation_failure(run, pilots)
     asyncio.run(check_database(run, pilots))
     print(json.dumps({
         "check": "PASS", "run_id": run_id, "database": "OK",
@@ -161,6 +215,10 @@ def main():
         "fallback_adapter": "OK", "incremental_trace_observed": incremental,
         "campaigns": len(run["campaigns"]), "pilots": len(pilots),
         "cost": run["metrics"]["total_cost"], "contacts": run["metrics"]["total_contacts"],
+        "net": run["metrics"]["net_arpu_gain"],
+        "channels": [c["channel"] for c in run["campaigns"]],
+        "explanation_source": run["explanation"]["explanation"]["source"],
+        "explanation_failure_safe": True,
         "max_campaign_size": max(row["n_contacts"] for row in run["campaigns"]),
     }, indent=2))
 

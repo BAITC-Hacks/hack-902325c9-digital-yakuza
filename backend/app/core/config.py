@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     cors_origins: list[str]
     openai_api_key: SecretStr = SecretStr("")
     beeline_agent_dir: Path | None = None
+    expected_agent_sha256: str = "59547e1d9a5695c67085d6db528c6d1636da5cbe34c0ee4f8f4a4f08dff52871"
 
 
 @lru_cache
