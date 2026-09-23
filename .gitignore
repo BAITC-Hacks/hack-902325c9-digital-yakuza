@@ -1,1 +1,4 @@
-/beeline_case_participants/
+beeline_case_participants/
+.env
+.env.*
+!.env.example

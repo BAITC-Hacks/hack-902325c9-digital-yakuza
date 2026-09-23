@@ -1,23 +1,30 @@
 # Heroku
 
-1. Деплоить содержимое backend как корень приложения: requirements.txt, Procfile и .python-version должны находиться в корне Heroku source. При использовании монорепозитория публиковать backend отдельным subtree или настраивать CI на этот каталог.
-2. Использовать Python buildpack и Python 3.12 из .python-version.
-3. Подключить PostgreSQL и задать Config Vars:
+Приложение: `hackalem-backend`.
+Production: https://hackalem-backend-5a3d74f6419c.herokuapp.com/
+
+## Настройки deployment
+
+1. В Heroku Deploy подключить GitHub repository, выбрать `main` и включить Automatic Deploys. Backend deployment через GitHub Actions не использовать.
+2. Сохранить Config Var `APP_BASE=backend` для monorepo.
+3. Порядок buildpacks: `heroku-buildpack-monorepo`, затем `heroku/python`. Python 3.12 задаётся файлом `backend/.python-version`.
+4. Использовать существующий внешний PostgreSQL. Production Config Vars:
 
 | Переменная | Значение |
 | --- | --- |
 | APP_NAME | Название приложения |
+| APP_BASE | backend |
 | APP_ENV | production |
 | DEBUG | false |
 | DATABASE_URL | Полный URL production PostgreSQL от провайдера, включая требуемые SSL-параметры |
-| CORS_ORIGINS | JSON-массив, например ["https://example.com"] |
+| CORS_ORIGINS | JSON-массив реальных frontend origins, например ["https://example.com"]; ["*"] разрешает любой origin |
 | OPENAI_API_KEY | Ключ при подключении агента; пока можно не задавать |
 
 POSTGRES_DB, POSTGRES_USER и POSTGRES_PASSWORD нужны только локальному Compose.
 В production DATABASE_URL не должен содержать Docker hostname postgres.
 URL postgres:// и postgresql:// преобразуются в postgresql+psycopg://; hostname, credentials и query-параметры сохраняются. Для Heroku использовать psycopg, включая выданные провайдером параметры SSL.
 
-4. Команда запуска из Procfile:
+5. Команда запуска из `backend/Procfile`:
 
 ```text
 web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
@@ -25,12 +32,57 @@ web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
 
 PORT задаёт Heroku. Docker Compose для этого деплоя не используется.
 
-5. Перед открытием приложения применить миграции:
+## Проверка PostgreSQL и миграций
+
+Сначала проверить состояние миграций без изменения production-данных:
 
 ```sh
-heroku run alembic upgrade head --app YOUR_APP_NAME
+heroku run "alembic current" --app hackalem-backend
+heroku run "alembic heads" --app hackalem-backend
+heroku run "alembic check" --app hackalem-backend
 ```
 
-6. Проверить /health и /docs по HTTPS URL приложения.
+Для проверки SSL выполнить через соединение приложения SQL:
 
-Документация: [Python](https://devcenter.heroku.com/articles/python-support), [Procfile](https://devcenter.heroku.com/articles/procfile).
+```sql
+SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid();
+```
+
+Ожидается `ssl=true`. HTTP 200 от /health подтверждает доступность БД, но сам по себе не подтверждает SSL или актуальность схемы.
+
+После проверки содержимого новых миграций применять их отдельно:
+
+```sh
+heroku run "alembic upgrade head" --app hackalem-backend
+```
+
+Во время deployment-аудита не запускать upgrade, downgrade, reset и команды удаления данных. Миграции автоматически не выполняются текущим Procfile.
+
+## Проверка Automatic Deploys
+
+1. В Heroku Deploy проверить подключённый repository, ветку main и включённые Automatic Deploys.
+2. Если включено Wait for CI to pass before deploy, убедиться, что необходимые проверки существуют и проходят.
+3. После согласованного изменения выполнить `git push origin main` и записать SHA commit.
+4. В Heroku Activity проверить автоматический запуск Build именно для этого SHA, успешный Build и Release. Кнопку Deploy Branch для этой проверки не нажимать.
+5. Проверить startup logs:
+
+```sh
+heroku logs --num 200 --app hackalem-backend
+```
+
+6. Проверить HTTP 200 для /, /health и /docs. В логах не должно быть H10, ошибок обязательных настроек, DATABASE_URL, подключения БД и PORT.
+
+## Переключение на официальный HackAlem repository
+
+1. Убедиться, что официальный repository содержит backend/ с Procfile, requirements.txt и .python-version. Для подключения нужны права repository admin; для организации также проверить доступ Heroku OAuth и членство пользователя.
+2. В Deploy текущего приложения hackalem-backend отключить старый GitHub repository.
+3. Подключить официальный repository, выбрать main и включить Automatic Deploys.
+4. Оставить существующие Config Vars, APP_BASE=backend и оба buildpack без изменений. Не копировать секреты в Git.
+5. Сохранить тот же DATABASE_URL и существующую PostgreSQL; приложение и БД не пересоздавать.
+6. Выполнить первый deploy main. При переключении допустим Deploy Branch; для отдельной проверки автодеплоя нужен новый push без этой кнопки.
+7. Дождаться успешного Release и проверить /health, /docs и startup logs.
+8. При необходимости заменить только CORS_ORIGINS на адрес нового frontend. Перенос repository сам по себе не требует смены ключей или БД.
+
+Каталог beeline_case_participants/ исключён из Git на любой глубине. Перед push проверить git status и отсутствие .env среди отслеживаемых файлов.
+
+Документация: [GitHub integration](https://devcenter.heroku.com/articles/github-integration), [Python](https://devcenter.heroku.com/articles/python-support), [Procfile](https://devcenter.heroku.com/articles/procfile).
