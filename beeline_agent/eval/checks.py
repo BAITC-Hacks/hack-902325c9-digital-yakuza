@@ -14,6 +14,8 @@
   R4  без OPENAI_API_KEY всё работает
   R5  submission.csv в репо совпадает с тем, что сейчас выдаёт агент (сверка организаторов)
   R6  таблицы априора в agent.py: формат (q, q_se, n_obs) и каждое значение (конечное, q_se ≥ 0, n_obs — целое)
+  R7  обязательные условия ТЗ во всех сценариях: 1–10 кампаний, пилоты > 0, ничего не отброшено, лимиты
+      (random-7 — регрессия: там раньше был пустой план)
 """
 
 import ast
@@ -186,6 +188,17 @@ def r6_prior_tables():
            else "; ".join(problems))
 
 
+def r7_tz_compliance():
+    from sim.worlds import list_scenarios
+    worlds = [make_world(7, "random")] + [make_world(s, sc) for sc in list_scenarios() for s in range(3)]
+    bad = []
+    for world in worlds:
+        res = run_strategy(world, STRATEGIES["agent"], env_seed=world.seed)
+        if res["violations"]:
+            bad.append(f"{world.name}: {', '.join(res['violations'])}")
+    report("R7", not bad, f"{len(worlds)} миров: нарушений ТЗ нет" if not bad else "; ".join(bad[:3]))
+
+
 def main():
     worlds = [make_world(0, "mock")] + [make_world(s, sc) for s in range(3)
                                          for sc in ("random", "flip", "shift", "stingy", "unknown_rich", "high_rich")]
@@ -199,6 +212,7 @@ def main():
     r3_fallback()
     r4_no_key()
     r5_submission_fresh()
+    r7_tz_compliance()
     failed = [r for r in results if r[1] == "FAIL"]
     print(f"\nитог: {len(results) - len(failed)} из {len(results)} без ошибок" + (" — ЕСТЬ ПРОВАЛЫ" if failed else ""))
     sys.exit(1 if failed else 0)

@@ -46,6 +46,7 @@ def run_strategy(world, make_strategy, env_seed):
         final, error = [], f"{type(exc).__name__}: {exc}"
     seconds = time.monotonic() - t0
 
+    returned = len(final) if isinstance(final, list) else 0
     final = sanitize_campaigns(final, env.tariffs)[:MAX_CAMPAIGNS]
     pilots = internals.executed_pilot_campaigns()
     campaigns = pd.DataFrame(pilots + final)
@@ -58,7 +59,28 @@ def run_strategy(world, make_strategy, env_seed):
         result = score_campaigns(campaigns, env.customer_profile, world.impact_model, env.tariffs,
                                  env.customer_profile["predicted_arpu"].sum(), world.fallback_predict)
     result.update({"plan": final, "n_pilots": len(pilots), "seconds": seconds, "error": error})
+    result["violations"] = tz_violations(returned, final, result, len(pilots), seconds)
     return result
+
+
+def tz_violations(returned, final, result, n_pilots, seconds):
+    """Нарушения обязательных условий ТЗ в одном прогоне (пустой список = всё соблюдено)."""
+    v = []
+    if not 1 <= len(final) <= MAX_CAMPAIGNS:
+        v.append(f"кампаний {len(final)} (нужно 1–10)")
+    if returned > len(final):
+        v.append(f"отброшено кампаний: {returned - len(final)}")
+    if n_pilots == 0:
+        v.append("пилотов 0")
+    if result.get("total_cost", 0) > TOTAL_BUDGET:
+        v.append("бюджет превышен")
+    if result.get("total_contacts", 0) > MAX_TOTAL_CONTACTS:
+        v.append("охват превышен")
+    if seconds > 600:
+        v.append("дольше 10 минут")
+    if result.get("error"):
+        v.append("агент упал")
+    return v
 
 
 def _ratio_table(world, profile, dict_tariff):
