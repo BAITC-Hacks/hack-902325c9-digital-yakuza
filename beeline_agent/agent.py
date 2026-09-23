@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 SEGMENTS = ("LOW", "MID", "HIGH")
+DATA_SEGMENTS = ("NON_USER", "LITE", "HEAVY")
+CALL_SEGMENTS = ("LOW", "MEDIUM", "HIGH")
 PILOT_NOISE_SD = 0.804          # разброс эффекта на одного абонента (environment.py)
 MAX_CAMPAIGNS = 10
 MAX_PER_CAMPAIGN = 5000
@@ -3840,6 +3842,11 @@ PRIOR_SCORE = {
 # === PRIOR END ===
 
 
+def _prob_positive(c):
+    """Вероятность, что базовый эффект кандидата выше нуля (нормальная оценка)."""
+    return 0.5 * (1 + math.erf(c.mu / (c.sd * math.sqrt(2)))) if c.sd > 0 else float(c.mu > 0)
+
+
 @dataclass
 class Candidate:
     segment: str
@@ -3881,6 +3888,11 @@ class Agent:
         except Exception as exc:  # агент не должен падать: пилоты уже в зачёте
             self._log("error", error=f"{type(exc).__name__}: {exc}")
             plan = self._fallback_plan(candidates, env)
+        if not plan:              # ТЗ: от 1 до 10 кампаний — пустой план не засчитывается
+            try:
+                plan = self._validate(self._minimal_campaign(candidates, env), env)
+            except Exception as exc:
+                self._log("minimal_error", error=f"{type(exc).__name__}: {exc}")
         self._log("done", campaigns=len(plan), seconds=round(time.monotonic() - self._t0, 1))
         return plan
 
@@ -3999,6 +4011,34 @@ class Agent:
                 break
         return plan
 
+    def _minimal_campaign(self, candidates, env):
+        """
+        Ни одна кампания не прошла порог надёжности, но ТЗ требует хотя бы одну.
+        Берём гипотезу с наибольшей вероятностью плюса, бесплатный push и самую маленькую
+        подгруппу её аудитории (тариф × трафик × звонки): возможный убыток минимален.
+        """
+        pool = [c for c in candidates if c.pilots] or list(candidates)
+        if not pool:
+            self._log("minimal_skip", reason="нет ни одной гипотезы")
+            return []
+        best = max(pool, key=lambda c: (_prob_positive(c), c.mu, c.key))
+        profile = env.customer_profile
+        audience = profile[(profile["arpu_segment"] == best.segment) & profile["current_tariff"].isin(best.tariffs)]
+        groups = audience.groupby(["current_tariff", "data_segment", "call_segment"]).size()
+        groups = groups[groups > 0]
+        if groups.empty:
+            self._log("minimal_skip", reason="у лучшей гипотезы пустая аудитория")
+            return []
+        (tariff, data_segment, call_segment), size = min(groups.items(), key=lambda kv: (kv[1], kv[0]))
+        self._log("minimal_campaign", candidate=best.key, contacts=int(size), channel="push",
+                  prob_positive=round(_prob_positive(best), 3), mu=round(best.mu, 4),
+                  reason="ни одна кампания не прошла порог надёжности; ТЗ требует хотя бы одну — "
+                         "минимальная аудитория через бесплатный push")
+        return [{"campaign_name": f"minimal_{best.segment}_{best.target}",
+                 "filter_arpu_segment": best.segment, "filter_current_tariff": tariff,
+                 "filter_data_segment": data_segment, "filter_call_segment": call_segment,
+                 "target_tariff": best.target, "channel": "push"}]
+
     # ------------------------------------------------------ 7: checks + fallback
     def _validate(self, plan, env):
         tariffs = set(env.tariffs["tariff_plan_code"])
@@ -4006,7 +4046,9 @@ class Agent:
         for camp in plan:
             listed = camp.get("filter_current_tariff", "").split(";")
             if (camp["target_tariff"] in tariffs and camp["channel"] in env.channels
-                    and camp.get("filter_arpu_segment") in SEGMENTS and all(t in tariffs for t in listed)):
+                    and camp.get("filter_arpu_segment") in SEGMENTS and all(t in tariffs for t in listed)
+                    and camp.get("filter_data_segment", DATA_SEGMENTS[0]) in DATA_SEGMENTS
+                    and camp.get("filter_call_segment", CALL_SEGMENTS[0]) in CALL_SEGMENTS):
                 ok.append(camp)
             else:
                 self._log("plan_drop", campaign=camp, reason="невалидная кампания")

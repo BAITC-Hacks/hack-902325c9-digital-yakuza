@@ -53,7 +53,8 @@ def run(worlds, scenarios, split, strategies, env_seed_base=0, source="sim"):
                              "share_of_ceiling": res["net_arpu_gain"] / ceiling if ceiling > 0 else np.nan,
                              "cost": res["total_cost"], "risk_pct": res["risk_score_pct"],
                              "pilots": res["n_pilots"], "campaigns": len(res["plan"]),
-                             "seconds": res["seconds"], "error": res["error"]})
+                             "seconds": res["seconds"], "error": res["error"],
+                             "violations": "; ".join(res["violations"])})
     return pd.DataFrame(rows)
 
 
@@ -68,6 +69,7 @@ def summarize(df):
         "от потолка, %": g["share_of_ceiling"].median() * 100,
         "пилотов": g["pilots"].median(),
         "сек": g["seconds"].max(),
+        "нарушений ТЗ": g["violations"].apply(lambda s: int((s.fillna("") != "").sum())),
     })
 
 
