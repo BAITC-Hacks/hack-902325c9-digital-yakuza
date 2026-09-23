@@ -1,2 +1,6 @@
 __pycache__/
+.pytest_cache/
 eval/results/
+.env
+.env.*
+!.env.example

@@ -13,6 +13,7 @@
   R3  запасной путь: агент не падает, если пилоты или план ломаются
   R4  без OPENAI_API_KEY всё работает
   R5  submission.csv в репо совпадает с тем, что сейчас выдаёт агент (сверка организаторов)
+  R6  таблицы априора в agent.py: формат (q, q_se, n_obs) и каждое значение (конечное, q_se ≥ 0, n_obs — целое)
 """
 
 import ast
@@ -178,9 +179,17 @@ def r5_submission_fresh():
            else "submission.csv устарел: запусти python make_submission.py и закоммить")
 
 
+def r6_prior_tables():
+    from eval.prior_tables import read_tables, validate
+    problems = validate(read_tables(ROOT / "agent.py"))
+    report("R6", not problems, "PRIOR и PRIOR_UNSEEN в формате (q, q_se, n_obs), значения корректны" if not problems
+           else "; ".join(problems))
+
+
 def main():
     worlds = [make_world(0, "mock")] + [make_world(s, sc) for s in range(3)
                                          for sc in ("random", "flip", "shift", "stingy", "unknown_rich", "high_rich")]
+    r6_prior_tables()               # первой: при несовместимой таблице остальные проверки бессмысленны
     t1_matches_local_eval()
     t2_ceiling_is_ceiling(worlds)
     t3_deterministic()
