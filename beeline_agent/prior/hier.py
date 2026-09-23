@@ -31,12 +31,12 @@ TAU2_FLOOR = 1e-4
 KERNEL_BANDWIDTH = 1.0   # ширина ядра по стандартизованным атрибутам тарифа
 
 
-def _mom_tau2(est: np.ndarray, se2: np.ndarray, w: np.ndarray) -> float:
+def _mom_tau2(estimate: np.ndarray, se2: np.ndarray, w: np.ndarray) -> float:
     """Метод моментов: дисперсия оценок между группами минус средняя дисперсия ошибки."""
-    if len(est) < 3:
+    if len(estimate) < 3:
         return TAU2_FLOOR
-    m = np.average(est, weights=w)
-    return float(max(np.average((est - m) ** 2, weights=w) - np.average(se2, weights=w), TAU2_FLOOR))
+    m = np.average(estimate, weights=w)
+    return float(max(np.average((estimate - m) ** 2, weights=w) - np.average(se2, weights=w), TAU2_FLOOR))
 
 
 def _shrink(g: pd.DataFrame, target: pd.Series, se2: pd.Series, tau2) -> tuple[pd.Series, pd.Series]:
@@ -69,17 +69,17 @@ def fit(hist: pd.DataFrame, tariffs: pd.DataFrame) -> dict:
     d = d.merge(strata[["tariff_from", "arpu_segment", "mean"]].rename(columns={"mean": "stratum_mean"}),
                 on=["tariff_from", "arpu_segment"])
     d["dev2"] = (d["pct"] - d["stratum_mean"]) ** 2
-    gseg = d.groupby("arpu_segment")
-    within = gseg["dev2"].sum() / (gseg.size() - gseg["tariff_from"].nunique()).clip(lower=1)
+    by_segment = d.groupby("arpu_segment")
+    within_var = by_segment["dev2"].sum() / (by_segment.size() - by_segment["tariff_from"].nunique()).clip(lower=1)
     seg_mean = d.groupby("arpu_segment")["pct"].mean()
     level_rows, level_params = [], {}
     for seg, g in strata.groupby("arpu_segment"):
-        se2 = within[seg] / g["n"]
+        se2 = within_var[seg] / g["n"]
         big = g["n"] >= MIN_N_TAU
         tau2 = _mom_tau2(g.loc[big, "mean"].values, se2[big].values, g.loc[big, "n"].values)
-        est, sd = _shrink(g, seg_mean[seg], se2, tau2)
-        level_rows.append(g.assign(level=est.values, level_sd=sd.values))
-        level_params[seg] = {"mean": float(seg_mean[seg]), "tau": float(np.sqrt(tau2)), "sigma": float(np.sqrt(within[seg]))}
+        estimate, sd = _shrink(g, seg_mean[seg], se2, tau2)
+        level_rows.append(g.assign(level=estimate.values, level_sd=sd.values))
+        level_params[seg] = {"mean": float(seg_mean[seg]), "tau": float(np.sqrt(tau2)), "sigma": float(np.sqrt(within_var[seg]))}
     level = pd.concat(level_rows).set_index(["tariff_from", "arpu_segment"])
     for seg in SEGMENTS:                       # сегмента нет в данных — общий уровень с широкой неопределённостью
         if seg not in level_params:
@@ -87,75 +87,84 @@ def fit(hist: pd.DataFrame, tariffs: pd.DataFrame) -> dict:
                                  "sigma": float(d["pct"].std())}
 
     # --- 2. контраст: цель → сегмент×цель → ячейка -----------------------------------------
-    d["c"] = d["pct"] - d["stratum_mean"]
+    d["contrast"] = d["pct"] - d["stratum_mean"]
     # уровень «цель»
-    T = d.groupby("tariff_to")["c"].agg(n="size", mean="mean", var="var")
-    se2 = T["var"].fillna(T["var"].median()) / T["n"]
-    tau2_t = _mom_tau2(T["mean"].values, se2.values, T["n"].values)
-    ct, ct_sd = _shrink(T, 0.0, se2, tau2_t)
-    d["r1"] = d["c"] - d["tariff_to"].map(ct)
+    by_target = d.groupby("tariff_to")["contrast"].agg(n="size", mean="mean", var="var")
+    se2 = by_target["var"].fillna(by_target["var"].median()) / by_target["n"]
+    tau2_target = _mom_tau2(by_target["mean"].values, se2.values, by_target["n"].values)
+    target_effect, target_effect_sd = _shrink(by_target, 0.0, se2, tau2_target)
+    d["resid_after_target"] = d["contrast"] - d["tariff_to"].map(target_effect)
     # уровень «сегмент × цель»
-    ST = d.groupby(["arpu_segment", "tariff_to"])["r1"].agg(n="size", mean="mean", var="var")
-    se2 = ST["var"].fillna(ST["var"].median()) / ST["n"]
-    big = ST["n"] >= MIN_N_TAU
-    tau2_st = _mom_tau2(ST.loc[big, "mean"].values, se2[big].values, ST.loc[big, "n"].values)
-    dst, dst_sd = _shrink(ST, 0.0, se2, tau2_st)
-    d["r2"] = d["r1"] - pd.Series(list(zip(d["arpu_segment"], d["tariff_to"]))).map(dst).values
+    by_seg_target = d.groupby(["arpu_segment", "tariff_to"])["resid_after_target"].agg(n="size", mean="mean", var="var")
+    se2 = by_seg_target["var"].fillna(by_seg_target["var"].median()) / by_seg_target["n"]
+    big = by_seg_target["n"] >= MIN_N_TAU
+    tau2_seg_target = _mom_tau2(by_seg_target.loc[big, "mean"].values, se2[big].values,
+                                by_seg_target.loc[big, "n"].values)
+    seg_target_effect, seg_target_effect_sd = _shrink(by_seg_target, 0.0, se2, tau2_seg_target)
+    seg_target_key = pd.Series(list(zip(d["arpu_segment"], d["tariff_to"])))
+    d["resid_after_seg_target"] = d["resid_after_target"] - seg_target_key.map(seg_target_effect).values
     # уровень «ячейка»
-    F = d.groupby(KEY)["r2"].agg(n="size", mean="mean")
-    d["r2dev2"] = (d["r2"] - d.groupby(KEY)["r2"].transform("mean")) ** 2
+    by_cell = d.groupby(KEY)["resid_after_seg_target"].agg(n="size", mean="mean")
+    d["resid_dev2"] = (d["resid_after_seg_target"] - d.groupby(KEY)["resid_after_seg_target"].transform("mean")) ** 2
     n_cells = d.groupby("arpu_segment")[["tariff_from", "tariff_to"]].apply(lambda x: len(x.drop_duplicates()))
-    resid_var = d.groupby("arpu_segment")["r2dev2"].sum() / (d.groupby("arpu_segment").size() - n_cells).clip(lower=1)
-    se2 = pd.Series([resid_var.get(s, resid_var.mean()) for s in F.index.get_level_values("arpu_segment")],
-                    index=F.index) / F["n"]
-    big = F["n"] >= MIN_N_TAU
-    tau2_f = _mom_tau2(F.loc[big, "mean"].values, se2[big].values, F.loc[big, "n"].values)
-    ef, ef_sd = _shrink(F, 0.0, se2, tau2_f)
+    resid_var = d.groupby("arpu_segment")["resid_dev2"].sum() / (d.groupby("arpu_segment").size() - n_cells).clip(lower=1)
+    se2 = pd.Series([resid_var.get(s, resid_var.mean()) for s in by_cell.index.get_level_values("arpu_segment")],
+                    index=by_cell.index) / by_cell["n"]
+    big = by_cell["n"] >= MIN_N_TAU
+    tau2_cell = _mom_tau2(by_cell.loc[big, "mean"].values, se2[big].values, by_cell.loc[big, "n"].values)
+    cell_effect, cell_effect_sd = _shrink(by_cell, 0.0, se2, tau2_cell)
 
     # --- 3. перенос контраста на цели без истории по атрибутам тарифа -----------------------
     feats = tariff_features(tariffs)
-    seen = ct.index.tolist()
-    loo = np.array([_kernel_predict(ct, feats, t) - ct[t] for t in seen])
+    seen = target_effect.index.tolist()
+    loo = np.array([_kernel_predict(target_effect, feats, t) - target_effect[t] for t in seen])
     kernel_rmse = float(np.sqrt(np.mean(loo ** 2)))
-    zero_rmse = float(np.sqrt(np.mean(ct.values ** 2)))
+    zero_rmse = float(np.sqrt(np.mean(target_effect.values ** 2)))
     use_kernel = kernel_rmse < zero_rmse
     transfer_rmse = kernel_rmse if use_kernel else zero_rmse
     unseen = [t for t in feats.index if t not in seen]
-    ct_unseen = {t: (_kernel_predict(ct, feats, t) if use_kernel else 0.0) for t in unseen}
+    target_effect_unseen = {t: (_kernel_predict(target_effect, feats, t) if use_kernel else 0.0) for t in unseen}
 
-    return {"level": level, "level_params": level_params, "ct": ct, "ct_sd": ct_sd, "dst": dst, "dst_sd": dst_sd,
-            "ef": ef, "ef_sd": ef_sd, "tau": {"target": float(np.sqrt(tau2_t)), "seg_target": float(np.sqrt(tau2_st)),
-                                              "cell": float(np.sqrt(tau2_f))},
-            "ct_unseen": ct_unseen, "transfer_rmse": transfer_rmse, "seen_targets": seen, "unseen_targets": unseen,
+    return {"level": level, "level_params": level_params,
+            "target_effect": target_effect, "target_effect_sd": target_effect_sd,
+            "seg_target_effect": seg_target_effect, "seg_target_effect_sd": seg_target_effect_sd,
+            "cell_effect": cell_effect, "cell_effect_sd": cell_effect_sd,
+            "tau": {"target": float(np.sqrt(tau2_target)), "seg_target": float(np.sqrt(tau2_seg_target)),
+                    "cell": float(np.sqrt(tau2_cell))},
+            "target_effect_unseen": target_effect_unseen, "transfer_rmse": transfer_rmse,
+            "seen_targets": seen, "unseen_targets": unseen,
             "transfer": {"kernel_loo_rmse": kernel_rmse, "zero_rmse": zero_rmse,
                          "method": "kernel" if use_kernel else "zero"},
             "loo_errors": dict(zip(seen, loo.round(4)))}
 
 
-def predict(model: dict, f: str, s: str, t: str) -> dict:
-    """Оценка Δ% тройки: уровень + контраст, с неопределённостью и источником каждой части."""
-    lp = model["level_params"][s]
-    if (f, s) in model["level"].index:
-        row = model["level"].loc[(f, s)]
+def predict(model: dict, tariff_from: str, segment: str, tariff_to: str) -> dict:
+    """Оценка Δ% тройки: уровень страты + контраст цели, с неопределённостью и источником каждой части."""
+    seg_level = model["level_params"][segment]
+    if (tariff_from, segment) in model["level"].index:
+        row = model["level"].loc[(tariff_from, segment)]
         level, level_sd = float(row["level"]), float(row["level_sd"])
     else:
-        level, level_sd = lp["mean"], lp["tau"]
+        level, level_sd = seg_level["mean"], seg_level["tau"]
     tau = model["tau"]
-    if t in model["ct"].index:
-        c, var, src = float(model["ct"][t]), float(model["ct_sd"][t]) ** 2, "history"
+    if tariff_to in model["target_effect"].index:
+        contrast = float(model["target_effect"][tariff_to])
+        contrast_var, source = float(model["target_effect_sd"][tariff_to]) ** 2, "history"
     else:
-        c, var, src = model["ct_unseen"][t], model["transfer_rmse"] ** 2, "unseen_target"
-    if (s, t) in model["dst"].index:
-        c += float(model["dst"][(s, t)])
-        var += float(model["dst_sd"][(s, t)]) ** 2
+        contrast = model["target_effect_unseen"][tariff_to]
+        contrast_var, source = model["transfer_rmse"] ** 2, "unseen_target"
+    if (segment, tariff_to) in model["seg_target_effect"].index:
+        contrast += float(model["seg_target_effect"][(segment, tariff_to)])
+        contrast_var += float(model["seg_target_effect_sd"][(segment, tariff_to)]) ** 2
     else:
-        var += tau["seg_target"] ** 2
-    if (f, s, t) in model["ef"].index:
-        c += float(model["ef"][(f, s, t)])
-        var += float(model["ef_sd"][(f, s, t)]) ** 2
+        contrast_var += tau["seg_target"] ** 2
+    cell = (tariff_from, segment, tariff_to)
+    if cell in model["cell_effect"].index:
+        contrast += float(model["cell_effect"][cell])
+        contrast_var += float(model["cell_effect_sd"][cell]) ** 2
     else:
-        var += tau["cell"] ** 2
-        if src == "history":
-            src = "no_history_for_cell"
-    return {"level": level, "level_sd": level_sd, "contrast": c, "contrast_sd": float(np.sqrt(var)),
-            "pct": level + c, "pct_sd": float(np.sqrt(level_sd ** 2 + var)), "source": src}
+        contrast_var += tau["cell"] ** 2
+        if source == "history":
+            source = "no_history_for_cell"
+    return {"level": level, "level_sd": level_sd, "contrast": contrast, "contrast_sd": float(np.sqrt(contrast_var)),
+            "pct": level + contrast, "pct_sd": float(np.sqrt(level_sd ** 2 + contrast_var)), "source": source}

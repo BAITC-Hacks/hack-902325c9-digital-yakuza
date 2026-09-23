@@ -83,7 +83,6 @@ def main():
     raw = pd.read_csv(ROOT / "data" / "change_tariff.csv")
     profile = pd.read_csv(ROOT / "customer_profile.csv")
     tariffs = pd.read_csv(ROOT / "data" / "dict_tariff.csv")
-    price = tariffs.set_index("tariff_plan_code")["price_tariff"]
 
     # вес «похожести на аудиторию» для миров со сдвигом — грубо по ARPU-сегменту до смены
     seg = pd.cut(raw["AVG_ARPU_PREV_3M"], [-np.inf, 1000, 5000, np.inf], labels=["LOW", "MID", "HIGH"]).astype(str)
