@@ -68,7 +68,13 @@ SCENARIOS = {
     "unknown_rich": "лучшие эффекты — у тарифов без истории (2, 3, 5, 6, 7, 14–20)",
     "high_rich": "HIGH (74% денег) на деле прибыльнее, чем по истории: Δ% в HIGH сдвинут вверх на 0.15–0.4",
     "resample": "как мок, но по бутстрэпу абонентов истории (другая выборка — та же конструкция)",
+    # добавлены в конце — миры прежних сценариев с теми же seed не меняются
+    "random_soft": "как random, но сила сдвига 0.25–1.0 (история почти верна)",
+    "random_hard": "как random, но сила сдвига 1.2–2.5 (история почти бесполезна; «~15×» по прокси оракула)",
+    "causal": "эффект без регрессии к среднему: из уровня страты вычтен дрейф сегмента по плацебо "
+              "(апрель–июнь → июль–сентябрь без смен тарифа); LOW перестаёт быть «золотом»",
 }
+STRENGTH_BY_SCENARIO = {"random": None, "random_soft": (0.25, 1.0), "random_hard": (1.2, 2.5)}
 _SCENARIO_ID = {name: i for i, name in enumerate(SCENARIOS)}
 
 
@@ -160,6 +166,15 @@ def _base() -> dict:
 
     unseen = sorted(set(codes) - set(hist["tariff_to"]), key=lambda t: int(t.split("_")[1]))
     pct_hist = (preds["level"] + preds["contrast"]).values
+    # плацебо: дрейф Δ% по сегментам без смены тарифа (апрель–июнь → июль–сентябрь) — регрессия к среднему
+    am = pd.read_csv(ROOT / "data" / "arpu_monthly.csv").drop_duplicates()
+    piv = am.groupby(["ID_NUMBER", "TIME_KEY"])["ARPU_1M"].mean().unstack()
+    p1 = piv[["2026-04-01", "2026-05-01", "2026-06-01"]].mean(axis=1)
+    p2 = piv[["2026-07-01", "2026-08-01", "2026-09-01"]].mean(axis=1)
+    ok = p1.notna() & p2.notna() & (p1 >= 100)
+    placebo = (((p2[ok] - p1[ok]) / p1[ok]).clip(-1, 3)
+               .groupby(pd.cut(p1[ok], [-np.inf, 1000, 5000, np.inf], labels=list(SEGMENTS)), observed=True).mean())
+    placebo_drift = np.array([float(placebo.get(s, 0.0)) for s in seg])
     pos = {s: np.sort(pct_hist[observed & (seg == s)]) for s in SEGMENTS}
     target_id = pd.factorize(grid["tariff_plan_code_to"])[0]
     segtarget_id = pd.factorize(grid["arpu_segment"] + "|" + grid["tariff_plan_code_to"])[0]
@@ -173,7 +188,8 @@ def _base() -> dict:
         "tau": tau, "target_id": target_id, "segtarget_id": segtarget_id,
         "raw": raw, "ids": raw["ID_NUMBER"].unique(),
         "seg": seg, "cell_id": cell_id, "n_cells": int(cell_id.max() + 1),
-        "conv_base": conv_base, "unseen_targets": unseen,
+        "conv_base": conv_base, "unseen_targets": unseen, "placebo_drift": placebo_drift,
+        "placebo_by_segment": {k: round(float(v), 3) for k, v in placebo.items()},
         "is_unseen": grid["tariff_plan_code_to"].isin(unseen).values,
         "seg_pct_quantiles": {s: (float(np.quantile(v, 0.80)), float(np.quantile(v, 0.95))) for s, v in pos.items()},
     }
@@ -302,8 +318,8 @@ def make_world(seed: int, scenario: str = "random") -> World:
     if scenario == "resample":
         table, conv_med = _resample(B, rng)
         return World(name, int(seed), table, MockFallback(conv_med), params)
-    if scenario == "random":
-        params["strength"] = float(rng.uniform(*RANDOM_STRENGTH))
+    if scenario in STRENGTH_BY_SCENARIO:
+        params["strength"] = float(rng.uniform(*(STRENGTH_BY_SCENARIO[scenario] or RANDOM_STRENGTH)))
         params["contrast_rho"] = float(np.clip(1.0 - 0.4 * params["strength"], 0.0, 1.0))
     pct, conv = _plausible_truth(B, rng, rho=params.get("contrast_rho", 1.0))
 
@@ -326,7 +342,11 @@ def make_world(seed: int, scenario: str = "random") -> World:
         is_high = B["seg"] == "HIGH"
         cell_noise = rng.normal(0.0, 0.1, B["n_cells"])[B["cell_id"]]
         pct = np.where(is_high, pct + params["high_shift"] + cell_noise, pct)
-    elif scenario == "random":
+    elif scenario == "causal":
+        # реальная модель посчитана «причинно»: дрейф регрессии к среднему убран (± погрешность плацебо)
+        params["placebo_drift"] = B["placebo_by_segment"]
+        pct = pct - B["placebo_drift"] * float(rng.uniform(0.8, 1.2))
+    elif scenario in STRENGTH_BY_SCENARIO:
         # сила сдвига k: 0.5 — история почти верна (ρ = 0.8), 2 — контраст почти не переносится (ρ = 0.2)
         pct, conv, info = _level_drift(pct, conv, B, rng, params["strength"])
         params.update(info)
