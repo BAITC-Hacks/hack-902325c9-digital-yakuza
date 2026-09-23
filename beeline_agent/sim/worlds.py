@@ -14,11 +14,17 @@
 Как в среде считается эффект (не меняем, подстраиваемся):
     lift_ratio = arpu_change_pct × min(conversion_rate × множитель_канала, 1);  эффект = lift_ratio × predicted_arpu
 
-Основа мира (все сценарии, кроме mock) — правдоподобная «истина», согласованная с историей:
-  * тройки с историей: оценка Δ% из prior/ (среднее со сжатием, EB) + её выборочная ошибка;
-  * тройки без истории: Δ% из регрессии истории «Δ% ~ разница цен» по сегменту + разброс между
-    связками сегмента (τ) — так воспроизводятся разброс и доля отрицательных;
+Основа мира (кроме mock и resample) — «истина», разложенная так же, как приор (prior/hier.py):
+    Δ%(from, seg, to) = уровень страты L(from, seg) + контраст цели C(from, seg, to)
+  * L — в основном регрессия к среднему (плацебо без смен тарифа даёт тот же рисунок), поэтому
+    в искажённых мирах он сдвигается по сегментам и стратам: дрейф реальной аудитории другой;
+  * C = ρ·C_истории + √(1−ρ²)·шум с иерархией τ (цель, сегмент×цель, ячейка); ρ — насколько
+    переносится контраст (в истории split-half 0.92–0.96, в чужой среде — неизвестно);
+  * тройки без истории получают C из той же иерархии (для 12 тарифов — только шум: перенос по
+    атрибутам тарифа на истории не лучше нуля);
   * conversion — доля переходов (from, seg) → to со сглаживанием: сумма по целям ячейки = 1.
+resample — как мок, но по бутстрэпу абонентов истории (так организаторы могли построить реальную
+модель по другой выборке): тройки без наблюдений — мок-fallback, поэтому сумма conversion > 1, как у мока.
 Затем сценарий искажает основу (см. SCENARIOS). Ограничения: Δ% в [−1; 3], conversion в (0; 0.9],
 сумма conversion по целям одной (from, seg) не больше 1.
 
@@ -41,7 +47,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from mock_environment import _mock_fallback, _mock_impact_model  # noqa: E402
-from prior.history import clean_history, eb_shrink, pooled_sigma2  # noqa: E402
+from prior import hier  # noqa: E402
+from prior.history import clean_history  # noqa: E402
 
 SEGMENTS = ("LOW", "MID", "HIGH")
 COLUMNS = ["tariff_plan_code_from", "tariff_plan_code_to", "arpu_segment", "arpu_change_pct", "conversion_rate"]
@@ -53,13 +60,14 @@ RANDOM_STRENGTH = (0.5, 2.0)  # сила сдвига в сценарии random
 
 SCENARIOS = {
     "mock": "ровно мок-среда: _mock_impact_model по истории + _mock_fallback (контроль)",
-    "random": "основной: сдвиги по сегментам/ячейкам + случайная смесь искажений ниже со случайной силой",
+    "random": "основной: дрейф уровня по сегментам/стратам, ослабленный контраст (ρ) + смесь искажений ниже",
     "noise": "Δ% каждой тройки × логнормальный множитель вокруг 1",
     "flip": "у 20–30% троек знак эффекта меняется",
     "shift": "лучшие цели перемешаны: в 50–100% ячеек эффекты переставлены между целевыми тарифами",
     "stingy": "все эффекты × 0.2–0.4 — зарабатывать почти нечего",
     "unknown_rich": "лучшие эффекты — у тарифов без истории (2, 3, 5, 6, 7, 14–20)",
     "high_rich": "HIGH (74% денег) на деле прибыльнее, чем по истории: Δ% в HIGH сдвинут вверх на 0.15–0.4",
+    "resample": "как мок, но по бутстрэпу абонентов истории (другая выборка — та же конструкция)",
 }
 _SCENARIO_ID = {name: i for i, name in enumerate(SCENARIOS)}
 
@@ -129,21 +137,17 @@ def _base() -> dict:
     pct_mock = np.where(in_mock, m["arpu_change_pct"].values, [x[0] for x in fb])
     conv_mock = np.where(in_mock, m["conversion_rate"].values, [x[1] for x in fb])
 
-    # история после чистки: оценки Δ% со сжатием (EB) и регрессия по цене
+    # история после чистки: уровень страты + контраст цели (иерархический EB, prior/hier.py)
     hist, _ = clean_history(raw)
-    cells = hist.groupby(["tariff_from", "arpu_segment", "tariff_to"])["pct"].agg(n="size", est="mean").reset_index()
-    cells, seg_params = eb_shrink(cells, pooled_sigma2(hist), price, median_price)
-    cells = cells.rename(columns={"tariff_from": "tariff_plan_code_from", "tariff_to": "tariff_plan_code_to"})
-    h = grid.merge(cells[key + ["n", "shrunk", "post_sd"]], on=key, how="left")
-    n_obs = h["n"].fillna(0).values
+    model = hier.fit(hist, tariffs)
+    preds = pd.DataFrame([hier.predict(model, f, s, t) for f, t, s in
+                          zip(grid["tariff_plan_code_from"], grid["tariff_plan_code_to"], grid["arpu_segment"])])
+    n_tab = hist.groupby(["tariff_from", "arpu_segment", "tariff_to"]).size()
+    n_obs = np.array([n_tab.get((f, s, t), 0) for f, t, s in
+                      zip(grid["tariff_plan_code_from"], grid["tariff_plan_code_to"], grid["arpu_segment"])], dtype=float)
     observed = n_obs > 0
     seg = grid["arpu_segment"].values
-    a = np.array([seg_params[s]["a"] for s in seg])
-    b = np.array([seg_params[s]["b"] for s in seg])
-    tau = np.array([seg_params[s]["tau"] for s in seg])
-    mu = a + b * grid["dprice"].values
-    pct_hist = np.where(observed, h["shrunk"].values, mu)
-    pct_sd = np.where(observed, h["post_sd"].values, tau)
+    tau = model["tau"]
 
     # conversion: сглаженная доля переходов; сумма по 20 целям каждой ячейки = 1
     cell_id = pd.factorize(grid["tariff_plan_code_from"] + "|" + grid["arpu_segment"])[0]
@@ -155,13 +159,20 @@ def _base() -> dict:
     conv_base = (n_obs + CONV_ALPHA * p_seg) / (N_cell + CONV_ALPHA)
 
     unseen = sorted(set(codes) - set(hist["tariff_to"]), key=lambda t: int(t.split("_")[1]))
+    pct_hist = (preds["level"] + preds["contrast"]).values
     pos = {s: np.sort(pct_hist[observed & (seg == s)]) for s in SEGMENTS}
+    target_id = pd.factorize(grid["tariff_plan_code_to"])[0]
+    segtarget_id = pd.factorize(grid["arpu_segment"] + "|" + grid["tariff_plan_code_to"])[0]
     _BASE = {
         "grid": grid[key], "tariffs": tariffs, "price": price, "median_price": median_price,
         "mock_im": mock_im, "mock_conv_median": mock_conv_median, "in_mock": in_mock,
         "pct_mock": pct_mock.astype(float), "conv_mock": conv_mock.astype(float),
-        "observed": observed, "n_obs": n_obs, "pct_hist": pct_hist.astype(float), "pct_sd": pct_sd.astype(float),
-        "mu": mu, "tau": tau, "seg": seg, "cell_id": cell_id, "n_cells": int(cell_id.max() + 1),
+        "observed": observed, "n_obs": n_obs, "pct_hist": pct_hist.astype(float),
+        "level": preds["level"].values, "level_sd": preds["level_sd"].values,
+        "contrast": preds["contrast"].values, "contrast_sd": preds["contrast_sd"].values,
+        "tau": tau, "target_id": target_id, "segtarget_id": segtarget_id,
+        "raw": raw, "ids": raw["ID_NUMBER"].unique(),
+        "seg": seg, "cell_id": cell_id, "n_cells": int(cell_id.max() + 1),
         "conv_base": conv_base, "unseen_targets": unseen,
         "is_unseen": grid["tariff_plan_code_to"].isin(unseen).values,
         "seg_pct_quantiles": {s: (float(np.quantile(v, 0.80)), float(np.quantile(v, 0.95))) for s, v in pos.items()},
@@ -170,11 +181,35 @@ def _base() -> dict:
 
 
 # ------------------------------------------------------------- искажения
-def _plausible_truth(B: dict, rng) -> tuple[np.ndarray, np.ndarray]:
-    """Истина, согласованная с историей: оценка + её неопределённость; для троек без истории — регрессия + τ."""
-    z = rng.standard_normal(len(B["pct_hist"]))
-    pct = B["pct_hist"] + B["pct_sd"] * z
-    return pct, B["conv_base"].copy()
+def _plausible_truth(B: dict, rng, rho: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
+    """Истина из разложения истории: L + C с их неопределённостью; при rho < 1 контраст истории
+    переносится лишь частично, остальное — новый шум с той же иерархией (цель, сегмент×цель, ячейка)."""
+    n = len(B["pct_hist"])
+    z_level = rng.standard_normal(B["n_cells"])[B["cell_id"]]            # один сдвиг на страту
+    level = B["level"] + B["level_sd"] * z_level
+    contrast_hist = B["contrast"] + B["contrast_sd"] * rng.standard_normal(n)
+    tau = B["tau"]
+    fresh = (tau["target"] * rng.standard_normal(B["target_id"].max() + 1)[B["target_id"]]
+             + tau["seg_target"] * rng.standard_normal(B["segtarget_id"].max() + 1)[B["segtarget_id"]]
+             + tau["cell"] * rng.standard_normal(n))
+    contrast = rho * contrast_hist + np.sqrt(max(1.0 - rho ** 2, 0.0)) * fresh
+    return level + contrast, B["conv_base"].copy()
+
+
+def _resample(B: dict, rng) -> pd.DataFrame:
+    """Мок-конструкция по бутстрэпу абонентов истории + мок-fallback на тройках без наблюдений."""
+    ids = rng.choice(B["ids"], size=len(B["ids"]), replace=True)
+    boot = B["raw"].set_index("ID_NUMBER").loc[ids].reset_index()
+    im = _mock_impact_model(boot)
+    key = ["tariff_plan_code_from", "tariff_plan_code_to", "arpu_segment"]
+    m = B["grid"].merge(im[key + ["arpu_change_pct", "conversion_rate"]], on=key, how="left")
+    conv_med = float(im["conversion_rate"].median())
+    miss = m["arpu_change_pct"].isna().values
+    fb = [_mock_fallback(f, t, s, B["tariffs"], conv_med) for f, t, s in
+          zip(m.loc[miss, "tariff_plan_code_from"], m.loc[miss, "tariff_plan_code_to"], m.loc[miss, "arpu_segment"])]
+    m.loc[miss, "arpu_change_pct"] = [x[0] for x in fb]
+    m.loc[miss, "conversion_rate"] = [x[1] for x in fb]
+    return m[COLUMNS].reset_index(drop=True), conv_med
 
 
 def _noise(pct, rng, sigma):
@@ -217,14 +252,14 @@ def _unknown_rich(pct, conv, B, rng, k_range=(2, 4), damp_range=(0.3, 0.7)):
     return pct, conv, damp
 
 
-def _decorrelate(pct, conv, B, rng, k):
-    """Сдвиг «история → реальная аудитория» силы k: смещения Δ% по сегментам и ячейкам, шум по тройкам,
-    отклик частично перераспределён между целями ячейки. Именно это ломает стратегию «без разведки»."""
+def _level_drift(pct, conv, B, rng, k):
+    """Дрейф уровня силы k: реальная аудитория «регрессирует к среднему» иначе, чем история
+    (сдвиг по сегментам и стратам), и отклик частично перераспределён между целями ячейки."""
     seg_idx = pd.factorize(B["seg"])[0]
-    d_seg = rng.normal(0.0, 0.3 * k, 3)[seg_idx]
-    d_cell = rng.normal(0.0, 0.2 * k, B["n_cells"])[B["cell_id"]]
-    pct = pct + d_seg + d_cell + rng.normal(0.0, 0.2 * k, len(pct))
-    lam = float(np.clip(0.4 * k, 0.0, 0.9))
+    d_seg = rng.normal(0.0, 0.25 * k, 3)[seg_idx]
+    d_stratum = rng.normal(0.0, 0.15 * k, B["n_cells"])[B["cell_id"]]
+    pct = pct + d_seg + d_stratum
+    lam = float(np.clip(0.3 * k, 0.0, 0.9))
     rnd = rng.gamma(0.3, 1.0, len(conv))
     rnd = rnd / np.bincount(B["cell_id"], weights=rnd)[B["cell_id"]]
     conv = (1 - lam) * conv + lam * rnd
@@ -263,8 +298,14 @@ def make_world(seed: int, scenario: str = "random") -> World:
                      MockFallback(B["mock_conv_median"]), {"scenario": "mock"})
 
     rng = np.random.default_rng([int(seed), _SCENARIO_ID[scenario]])
-    pct, conv = _plausible_truth(B, rng)
     params: dict = {"scenario": scenario}
+    if scenario == "resample":
+        table, conv_med = _resample(B, rng)
+        return World(name, int(seed), table, MockFallback(conv_med), params)
+    if scenario == "random":
+        params["strength"] = float(rng.uniform(*RANDOM_STRENGTH))
+        params["contrast_rho"] = float(np.clip(1.0 - 0.4 * params["strength"], 0.0, 1.0))
+    pct, conv = _plausible_truth(B, rng, rho=params.get("contrast_rho", 1.0))
 
     if scenario == "noise":
         params["noise_sigma"] = float(rng.uniform(0.3, 0.8))
@@ -286,9 +327,8 @@ def make_world(seed: int, scenario: str = "random") -> World:
         cell_noise = rng.normal(0.0, 0.1, B["n_cells"])[B["cell_id"]]
         pct = np.where(is_high, pct + params["high_shift"] + cell_noise, pct)
     elif scenario == "random":
-        # сила сдвига k: 0.5 — история почти верна, 2 — почти бесполезна
-        params["strength"] = float(rng.uniform(*RANDOM_STRENGTH))
-        pct, conv, info = _decorrelate(pct, conv, B, rng, params["strength"])
+        # сила сдвига k: 0.5 — история почти верна (ρ = 0.8), 2 — контраст почти не переносится (ρ = 0.2)
+        pct, conv, info = _level_drift(pct, conv, B, rng, params["strength"])
         params.update(info)
         # плюс каждое из «именных» искажений с вероятностью 0.3
         if rng.random() < 0.3:
