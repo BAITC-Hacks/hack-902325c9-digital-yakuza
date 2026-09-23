@@ -92,6 +92,12 @@ def build_variants():
         "agent_units": with_table(units_only_table()),
         "agent_hier": with_table(hier_table()),
         "agent_step2_joint": lambda: joint2(verbose=False),   # шаг 2б: совместная модель ячеек (не принята)
+        # шаг 4+: улучшения поверх a631a16 (переключатели в agent.py)
+        "agent_ch": with_params(CHANNEL_ECONOMICS=True),
+        "agent_rep": with_params(PILOT_REPEAT_ONLY_IF_UNCLEAR=True),
+        "agent_uns": with_params(EXPLORE_UNSEEN=True),
+        "agent_ch_rep": with_params(CHANNEL_ECONOMICS=True, PILOT_REPEAT_ONLY_IF_UNCLEAR=True),
+        "agent_ch_rep_uns": with_params(CHANNEL_ECONOMICS=True, PILOT_REPEAT_ONLY_IF_UNCLEAR=True, EXPLORE_UNSEEN=True),
     }
 
 

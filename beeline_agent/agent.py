@@ -42,6 +42,10 @@ EXPLORE_CONTACT_SHARE = 0.30    # и не больше 30% лимита конт
 # Критерий риска: убыток на нижней границе оценки = Σ ARPU × множитель push × max(0, −(μ − K·σ)).
 FALLBACK_RISK_K = 1.0
 FALLBACK_CHANNEL = "push"       # бесплатный канал: риск только в эффекте, не в затратах
+# Улучшения (каждое принято по парному замеру на 135 мирах; False = поведение версии a631a16)
+CHANNEL_ECONOMICS = True               # канал кампании — по нижней границе ценности и остатку бюджета
+PILOT_REPEAT_ONLY_IF_UNCLEAR = False   # повторный пилот — только если решение по гипотезе ещё неясно
+EXPLORE_UNSEEN = False                 # тарифы без истории (PRIOR_UNSEEN) тоже становятся гипотезами
 
 # Формат таблиц задаёт prior/build_prior.py. Агент понимает только этот формат:
 #   q    — база эффекта: Δ% ARPU × доля переходов, до множителя канала
@@ -3906,6 +3910,8 @@ class Agent:
             raise ValueError(f"Таблица PRIOR в формате {PRIOR_FORMAT}, агент ждёт {EXPECTED_PRIOR_FORMAT}: "
                              f"пересобери её через prior/build_prior.py")
         row = PRIOR.get((tariff, segment, target))
+        if row is None and EXPLORE_UNSEEN:
+            row = PRIOR_UNSEEN.get((tariff, segment, target))    # осторожная оценка без истории, q_se больше
         if row is None:
             return None
         q, q_se, _n_obs = row
@@ -3956,7 +3962,8 @@ class Agent:
         m, cost = channel["conversion_multiplier"], channel["cost_per_contact"]
         while env.pilots_left > 0 and time.monotonic() - self._t0 < TIME_BUDGET_S:
             pool = [c for c in candidates
-                    if len(c.pilots) < MAX_PILOTS_PER_CANDIDATE and c.ucb() > 0]
+                    if len(c.pilots) < MAX_PILOTS_PER_CANDIDATE and c.ucb() > 0
+                    and not (PILOT_REPEAT_ONLY_IF_UNCLEAR and c.pilots and c.lcb() > 0)]
             if not pool:
                 self._log("explore_stop", reason="нет кандидатов с положительной оптимистичной оценкой")
                 break
@@ -3997,29 +4004,75 @@ class Agent:
     def _build_plan(self, candidates, env, require_pilot=True):
         viable = [c for c in candidates if c.lcb() > 0 and (c.pilots or not require_pilot)]
         viable.sort(key=lambda c: (-c.lcb() * c.arpu_sum, c.key))
-        covered, plan = set(), []
-        budget, contacts = env.remaining_budget, env.remaining_contacts
+        covered, items = set(), []
+        contacts = env.remaining_contacts
         for c in viable:
             tariffs = tuple(t for t in c.tariffs if (t, c.segment) not in covered)
             if not tariffs:
                 continue
-            size, _ = self._audience(env.customer_profile, c.segment, tariffs)
-            size = min(size, contacts)
+            full, arpu = self._audience(env.customer_profile, c.segment, tariffs)
+            size = min(full, contacts)
             if size <= 0:
                 break
-            channel = "sms" if size * env.channels["sms"]["cost_per_contact"] <= budget else "push"
-            budget -= size * env.channels[channel]["cost_per_contact"]
             contacts -= size
             covered.update((t, c.segment) for t in tariffs)
+            items.append({"candidate": c, "tariffs": tariffs, "size": size,
+                          "arpu": arpu * size / full if full else 0.0})
+            if len(items) == MAX_CAMPAIGNS:
+                break
+        if CHANNEL_ECONOMICS:
+            self._assign_channels(items, env)
+        else:                              # версия a631a16: sms, пока хватает денег, иначе push
+            budget = env.remaining_budget
+            for it in items:
+                it["channel"] = "sms" if it["size"] * env.channels["sms"]["cost_per_contact"] <= budget else "push"
+                budget -= it["size"] * env.channels[it["channel"]]["cost_per_contact"]
+        plan = []
+        for it in items:
+            c = it["candidate"]
             plan.append({"campaign_name": f"{c.segment}_{c.target}_{len(plan) + 1}",
                          "filter_arpu_segment": c.segment,
-                         "filter_current_tariff": ";".join(tariffs),
-                         "target_tariff": c.target, "channel": channel})
-            self._log("plan_add", candidate=c.key, channel=channel, contacts=size,
+                         "filter_current_tariff": ";".join(it["tariffs"]),
+                         "target_tariff": c.target, "channel": it["channel"]})
+            self._log("plan_add", candidate=c.key, channel=it["channel"], contacts=it["size"],
                       mu=round(c.mu, 4), lcb=round(c.lcb(), 4), pilots=len(c.pilots))
-            if len(plan) == MAX_CAMPAIGNS:
-                break
         return plan
+
+    def _assign_channels(self, items, env):
+        """
+        Канал каждой кампании — по экономике и остатку бюджета.
+        Ценность кампании на канале ch по НИЖНЕЙ границе оценки: (μ − K·σ)·m_ch·ARPU − цена_ch·контакты
+        (эффект на канале ≈ q·m, пока доля перехода × m < 1). Старт — бесплатный push; дальше жадно берём
+        переход на более дорогой канал с наибольшим «приростом ценности на 1 у.е. доплаты», только если прирост
+        положителен и доплата помещается в остаток бюджета.
+        """
+        channels = env.channels
+        by_cost = sorted(channels, key=lambda ch: (channels[ch]["cost_per_contact"], ch))
+
+        def value(it, ch):
+            return (it["candidate"].lcb() * channels[ch]["conversion_multiplier"] * it["arpu"]
+                    - channels[ch]["cost_per_contact"] * it["size"])
+
+        for it in items:
+            it["channel"] = by_cost[0]
+        budget = env.remaining_budget
+        while True:
+            best = None
+            for i, it in enumerate(items):
+                for ch in by_cost:
+                    extra = (channels[ch]["cost_per_contact"] - channels[it["channel"]]["cost_per_contact"]) * it["size"]
+                    if extra <= 0 or extra > budget:
+                        continue
+                    gain = value(it, ch) - value(it, it["channel"])
+                    if gain > 0 and (best is None or gain / extra > best[0]):
+                        best = (gain / extra, i, ch, extra)
+            if best is None:
+                break
+            _, i, ch, extra = best
+            items[i]["channel"] = ch
+            budget -= extra
+        self._log("channels", assigned={it["candidate"].key: it["channel"] for it in items},
+                  budget_left=round(budget))
 
     def _minimal_campaign(self, candidates, env):
         """

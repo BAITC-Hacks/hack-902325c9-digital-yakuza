@@ -158,8 +158,8 @@ def build_facts(result):
         warnings.append(("attention", "Ни одна кампания не прошла порог надёжности: план — запасная кампания "
                                       "с минимальным риском, чтобы выполнить требование ТЗ.", ["M"]))
     if facts["M"]["fields"]["remaining_budget"] > 0.3 * total_budget:
-        warnings.append(("info", "Больше трети бюджета не распределено ({M.remaining_budget}): "
-                                 "экономический выбор каналов в этой версии не реализован.", ["M"]))
+        warnings.append(("info", "Больше трети бюджета не распределено ({M.remaining_budget}): доплата за более "
+                                 "дорогие каналы не окупается по нижней границе оценки.", ["M"]))
     return facts, [{"severity": s, "text": t, "fact_ids": ids} for s, t, ids in warnings], links
 
 
