@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from eval.core import run_strategy, upper_bound
-from eval.strategies import STRATEGIES
+from eval.strategies import STRATEGIES, all_strategies
 
 CONTROL_OFFSET = 10_000
 RESULTS = Path(__file__).resolve().parent / "results"
@@ -40,19 +40,21 @@ def world_source(name):
 
 def run(worlds, scenarios, split, strategies, env_seed_base=0, source="sim"):
     make_world, _ = world_source(source)
+    registry = all_strategies() if any(s not in STRATEGIES for s in strategies) else STRATEGIES
     rows = []
     for scenario in scenarios:
         for seed in world_seeds(split, worlds):
             world = make_world(seed, scenario)
             ceiling = upper_bound(world)
             for name in strategies:
-                res = run_strategy(world, STRATEGIES[name], env_seed=env_seed_base + seed)
+                res = run_strategy(world, registry[name], env_seed=env_seed_base + seed)
                 rows.append({"scenario": scenario, "world": world.name, "strategy": name,
                              "net": res["net_arpu_gain"], "ceiling": ceiling,
                              "share_of_ceiling": res["net_arpu_gain"] / ceiling if ceiling > 0 else np.nan,
                              "cost": res["total_cost"], "risk_pct": res["risk_score_pct"],
                              "pilots": res["n_pilots"], "campaigns": len(res["plan"]),
-                             "seconds": res["seconds"], "error": res["error"]})
+                             "seconds": res["seconds"], "error": res["error"],
+                             "violations": "; ".join(res["violations"])})
     return pd.DataFrame(rows)
 
 
@@ -67,6 +69,7 @@ def summarize(df):
         "от потолка, %": g["share_of_ceiling"].median() * 100,
         "пилотов": g["pilots"].median(),
         "сек": g["seconds"].max(),
+        "нарушений ТЗ": g["violations"].apply(lambda s: int((s.fillna("") != "").sum())),
     })
 
 

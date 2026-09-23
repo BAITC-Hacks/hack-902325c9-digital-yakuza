@@ -31,3 +31,9 @@ STRATEGIES = {
     "history_only": HistoryOnly,
     "agent": lambda: Agent(verbose=False),
 }
+
+
+def all_strategies():
+    """Основные стратегии + варианты для экспериментов (eval/variants.py)."""
+    from eval.variants import build_variants
+    return {**STRATEGIES, **build_variants()}

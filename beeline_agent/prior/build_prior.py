@@ -54,7 +54,8 @@ PRIOR_MODE = "raw"           # что кладём в PRIOR (его читает
                              #   "hier" — уровень страты + контраст цели (точнее по истории, для структурного постериора)
 PRIOR_TUPLE = "q_se"         # "q_se" — (q, q_se, n_obs), договорённость с агентом; "legacy" — старый (q, n_obs, pct_std)
 CONV_ALPHA = 10.0            # сила сглаживания доли переходов
-UNSEEN_CONV_UNC = 0.5        # у троек без истории доля перехода — допущение (fallback × пакет): ±50%
+# у троек без истории доля перехода — допущение (fallback × пакет); её относительная неопределённость берётся
+# из данных: коэффициент вариации доли перехода между тройками с историей (≈0.9)
 VAR_PRIOR_DOF = 5            # сколько «наблюдений» весит разброс сегмента при оценке pct_std
 BUDGET_VALUE = 10.0          # у.е. прироста, которые приносит 1 у.е. бюджета в финальном плане (цена бюджета)
 CHANNELS = [("push", 0.0, 0.50), ("sms", 4.0, 0.65), ("digital_ads", 22.0, 0.85), ("call", 160.0, 1.20)]
@@ -100,8 +101,9 @@ def build(hist: pd.DataFrame, tariffs: pd.DataFrame, profile: pd.DataFrame):
     seen["reliability"] = np.select([seen["n_obs"] >= 20, seen["n_obs"] >= 6], ["high", "medium"], "low")
     totals = seen.groupby(["tariff_from", "arpu_segment"])["n_obs"].transform("sum")
     # стандартная ошибка q = pct × conv (дельта-метод), в единицах q, размер выборки уже учтён
-    se_pct_raw = np.sqrt(seg_var) / np.sqrt(seen["n_obs"])                  # ошибка сырого среднего Δ%
-    se_pct_raw = np.where(seen["n_obs"] > 1, seen["pct_std_raw"] / np.sqrt(seen["n_obs"]), se_pct_raw)
+    # ошибка сырого среднего Δ%: разброс берём подтянутым к разбросу сегмента (pct_std), иначе при n = 2–3
+    # случайно близкие значения дают почти нулевой разброс и ложную уверенность
+    se_pct_raw = seen["pct_std"] / np.sqrt(seen["n_obs"])
     conv_se_raw = np.sqrt(seen["conversion_raw"] * (1 - seen["conversion_raw"]) / totals)
     seen["q_se_raw"] = np.sqrt((seen["conversion_raw"] * se_pct_raw) ** 2 + (seen["pct_mean"] * conv_se_raw) ** 2)
     conv_se = np.sqrt(seen["conversion"] * (1 - seen["conversion"]) / (totals + CONV_ALPHA + 1))
@@ -123,8 +125,17 @@ def build(hist: pd.DataFrame, tariffs: pd.DataFrame, profile: pd.DataFrame):
     unseen["conversion"] = conv_fallback * (0.5 + 0.5 * unseen["fit"])
     unseen = _decompose(unseen.reset_index(drop=True), model)
     unseen["pct_std"] = unseen["pct_sd"]
-    unseen["q_se"] = np.sqrt((unseen["conversion"] * unseen["pct_sd"]) ** 2
-                             + (unseen["pct_hat"] * UNSEEN_CONV_UNC * unseen["conversion"]) ** 2)
+    # неопределённость Δ%: иерархия (в ней уже ошибка переноса контраста, LOO ≈ 0.24) + расхождение с
+    # fallback-правилом среды (мок: 0.4 × Δцены / медиана) — если реальная таблица этой тройки не содержит,
+    # среда возьмёт именно правило; доля перехода — ± коэффициент вариации долей у троек с историей
+    price = tariffs.set_index("tariff_plan_code")["price_tariff"]
+    pct_fb = (0.4 * (unseen["tariff_to"].map(price) - unseen["tariff_from"].map(price))
+              / float(price.median())).clip(-1.0, 3.0)
+    unseen["pct_fallback_rule"] = pct_fb
+    unseen["pct_unc"] = np.sqrt(unseen["pct_sd"] ** 2 + (unseen["pct_hat"] - pct_fb) ** 2)
+    conv_cv = float(seen["conversion_raw"].std() / seen["conversion_raw"].mean())
+    unseen["q_se"] = np.sqrt((unseen["conversion"] * unseen["pct_unc"]) ** 2
+                             + (unseen["pct_hat"] * conv_cv * unseen["conversion"]) ** 2)
     unseen["prior_q"], unseen["prior_se"], unseen["prior_std"] = unseen["q"], unseen["q_se"], unseen["pct_sd"]
     unseen["prior_pct"], unseen["prior_conv"] = unseen["pct_hat"], unseen["conversion"]
 
@@ -143,7 +154,7 @@ def build(hist: pd.DataFrame, tariffs: pd.DataFrame, profile: pd.DataFrame):
 
     meta = {"level": model["level_params"], "tau_contrast": model["tau"], "transfer": model["transfer"],
             "target_contrast": model["ct"].round(4).to_dict(), "conv_fallback": conv_fallback,
-            "budget_value": BUDGET_VALUE}
+            "unseen_conv_cv": conv_cv, "budget_value": BUDGET_VALUE}
     return seen, unseen, be, meta
 
 
@@ -191,7 +202,8 @@ def main() -> None:
             "conversion", "q_raw", "q_se_raw", "q_hier", "q_se_hier", "q_level", "q_contrast", "prior_q", "prior_se"]
     seen[cols].to_csv(ROOT / "prior" / "prior_table.csv", index=False)
     ucols = ["tariff_from", "arpu_segment", "tariff_to", "source", "fit_label", "fit", "fit_current", "data_cover",
-             "min_cover", "level", "contrast", "pct_hat", "pct_sd", "conversion", "q", "q_se", "q_level", "q_contrast"]
+             "min_cover", "level", "contrast", "pct_hat", "pct_sd", "pct_fallback_rule", "pct_unc", "conversion", "q",
+             "q_se", "q_level", "q_contrast"]
     unseen[ucols].to_csv(ROOT / "prior" / "prior_unseen.csv", index=False)
     be.round(5).to_csv(ROOT / "prior" / "breakeven.csv", index=False)
     (ROOT / "prior" / "reports").mkdir(exist_ok=True)
