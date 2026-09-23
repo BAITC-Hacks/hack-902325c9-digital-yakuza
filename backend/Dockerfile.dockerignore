@@ -1,0 +1,16 @@
+*
+!backend/
+!backend/**
+!beeline_agent/
+!beeline_agent/**
+**/.env
+**/.env.*
+**/__pycache__
+**/*.pyc
+**/.venv
+**/venv
+**/.git
+**/.idea
+**/.vscode
+**/postgres_data
+beeline_agent/outputs/

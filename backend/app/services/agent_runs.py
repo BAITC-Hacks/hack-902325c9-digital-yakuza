@@ -4,6 +4,7 @@ import logging
 import sys
 import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import select
@@ -76,7 +77,7 @@ async def explain_run(run_id: UUID) -> None:
         pilots = (await db.scalars(select(PilotResult).where(PilotResult.run_id == run_id)
                                    .order_by(PilotResult.sequence))).all()
         result = run_result(run, [c.payload for c in campaigns], [p.payload for p in pilots])
-    agent_directory()                      # распакованный пакет агента в sys.path
+    agent_directory()
     import workflow
     explanation = await asyncio.to_thread(workflow.explain_result, result, True)
     async with session_factory() as db:
@@ -103,6 +104,7 @@ async def execute_run(run_id: UUID, seed: int) -> None:
             process = await asyncio.create_subprocess_exec(
                 sys.executable, "-u", "-m", "app.services.agent_worker",
                 "--seed", str(seed),
+                cwd=Path(__file__).resolve().parents[2],
                 stdout=asyncio.subprocess.PIPE, stderr=errors,
                 limit=1024 * 1024,
             )

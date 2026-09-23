@@ -7,7 +7,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from app.core.beeline import agent_directory, RUN_TIMEOUT_SECONDS
+from app.core.beeline import agent_directory, agent_sha256, RUN_TIMEOUT_SECONDS
 
 
 def json_safe(value):
@@ -87,6 +87,7 @@ def decision_info(trace):
 def run(seed):
     started = time.monotonic()
     directory = agent_directory()
+    version = agent_sha256()
     from agent import Agent
     from environment import MAX_PILOTS, MIN_PILOT_CUSTOMERS, MAX_PILOT_CUSTOMERS
     from make_submission import CAMPAIGN_COLUMNS
@@ -168,7 +169,6 @@ def run(seed):
                 if key in info
             })
     csv = pd.DataFrame(campaigns).reindex(columns=CAMPAIGN_COLUMNS).to_csv(index=False)
-    manifest = json.loads((directory / "manifest.json").read_text())
     emit("result", {
         "campaigns": finals,
         "submission_csv": csv,
@@ -184,7 +184,7 @@ def run(seed):
             "remaining_budget": env.total_budget - score["total_cost"],
             "remaining_contacts": env.max_total_contacts - score["total_contacts"],
             "elapsed_seconds": elapsed,
-            "agent_sha256": manifest["agent.py"],
+            "agent_sha256": version,
         },
     })
 

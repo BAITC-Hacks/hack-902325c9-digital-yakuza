@@ -3,7 +3,7 @@ from functools import lru_cache
 
 import pandas as pd
 
-from app.core.beeline import agent_directory, RUN_TIMEOUT_SECONDS
+from app.core.beeline import agent_directory, agent_sha256, RUN_TIMEOUT_SECONDS
 
 
 @lru_cache
@@ -16,7 +16,6 @@ def get_case_summary() -> dict:
 
     profile = pd.read_csv(directory / "customer_profile.csv")
     tariffs = pd.read_csv(directory / "tariff_dictionary.csv")
-    manifest = json.loads((directory / "manifest.json").read_text())
     segments = {}
     for column in ("arpu_segment", "data_segment", "call_segment", "current_tariff"):
         groups = profile.groupby(column, dropna=False).agg(
@@ -29,7 +28,7 @@ def get_case_summary() -> dict:
         "case": "Beeline tariff marketing campaigns",
         "environment": "official_mock",
         "synthetic_data": True,
-        "agent_sha256": manifest["agent.py"],
+        "agent_sha256": agent_sha256(),
         "strategy": {
             **{
                 field: getattr(agent, constant)

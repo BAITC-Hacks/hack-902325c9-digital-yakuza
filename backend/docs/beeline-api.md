@@ -1,6 +1,6 @@
 # Beeline API
 
-Агент берётся из beeline_agent/ без изменения исходников. FastAPI запускает его в отдельном процессе, ограниченном 600 секундами. OpenAI не используется. Все результаты относятся к официальной mock-среде, а не к скрытому судейству.
+Агент берётся из beeline_agent/ без изменения исходников. FastAPI запускает его в отдельном процессе, ограниченном 600 секундами. Основная стратегия не зависит от OpenAI; существующий workflow может сформировать объяснение уже сохранённого плана. Все результаты относятся к официальной mock-среде, а не к скрытому судейству.
 
 ## Локальный запуск
 
@@ -37,7 +37,7 @@ docker compose exec backend alembic upgrade head
 
 ## Данные стратегии и решений
 
-- summary.strategy: max_pilot_budget_fraction, max_pilot_contacts_fraction, exploration_timeout_seconds, max_pilots_per_candidate, pilot_channel, fallback_channel, prior_format, prior_mode, max_pilots. Значения читаются из упакованного агента и официальной среды. Это настройки, а не результаты последнего запуска.
+- summary.strategy: max_pilot_budget_fraction, max_pilot_contacts_fraction, exploration_timeout_seconds, max_pilots_per_candidate, pilot_channel, fallback_channel, prior_format, prior_mode, max_pilots. Значения читаются непосредственно из исходников агента и официальной среды. Это настройки, а не результаты последнего запуска.
 - pilots: optional mu, sd, lcb и candidate_id. Значения дословно берутся из соответствующего события pilot после обновления оценки агентом. В первом ответе о новом пилоте этих полей ещё может не быть. mu/sd/lcb относятся к базовому эффекту q, observed_lift — к наблюдаемому эффекту канала; backend не пересчитывает их.
 - result: warnings, stop_reason, is_fallback, fallback_reason, estimate_source, risk_info. Эти же данные хранятся в metrics JSONB. Для старых запусков warnings=[], остальные новые поля могут быть null.
 - warnings: список объектов с code и исходным event либо reason. Коды: fallback_used, strategy_warning, partial_exploration, recoverable_error. Они не заменяют технический status. partial_exploration означает явную остановку исследования агентом, в том числе плановое сохранение резерва.
@@ -54,65 +54,47 @@ metrics.total_cost и metrics.total_contacts включают пилоты. fina
 
 Агент полагается на обрезку аудитории официальным скорингом. В campaigns возвращаются фактические n_contacts и флаги capped_at_campaign_limit / capped_at_reach_budget / capped_at_money_budget; исходные фильтры CSV сохраняются без изменения стратегии.
 
-## Обновление пакета агента
+## Загрузка исходников агента
 
-Heroku использует APP_BASE=backend и не включает соседнюю папку beeline_agent автоматически. В backend/vendor/beeline_agent.zip находится воспроизводимый пакет неизменённых исходников и нужных CSV. manifest.json хранит SHA256 каждого файла.
+Единственный источник — beeline_agent/ в корне monorepo. BEELINE_AGENT_DIR переопределяет каталог; относительный путь считается от корня репозитория, абсолютный используется напрямую. Если переменная не задана, loader берёт соседний с backend каталог beeline_agent.
 
-После изменений агентской командой пересобрать пакет из корня репозитория:
+Loader проверяет agent.py, environment.py, mock_environment.py, scoring_core.py, workflow.py, официальные скрипты проверки и необходимые CSV, затем добавляет точный путь в sys.path. При отсутствии файлов endpoints возвращают 503 с описанием проблемы. Конфликт уже импортированных одноимённых модулей приводит к явной ошибке. Agent не импортируется при startup FastAPI; запуск остаётся в отдельном Python-процессе с рабочим каталогом backend.
 
-```powershell
-docker run --rm --mount "type=bind,source=$PWD,target=/workspace" -w /workspace python:3.12-slim python backend/scripts/package_beeline.py
-```
+agent_sha256 в summary и метриках вычисляется непосредственно из agent.py. После изменения исходников нужно перезапустить backend: Python кеширует импорты, summary кешируется внутри процесса. При одновременном редактировании файлов во время запуска воспроизводимость не гарантируется.
 
-Если Python уже установлен, эквивалент: python backend/scripts/package_beeline.py. Скрипт читает beeline_agent/, записывает только backend/vendor/beeline_agent.zip. Новые версии numpy/pandas из beeline_agent/requirements.txt нужно согласовать с backend/requirements.txt.
-
-Проверка без записи, из корня репозитория:
-
-```powershell
-python -B backend/scripts/package_beeline.py --check
-```
-
-Без локального Python:
-
-```powershell
-docker run --rm --mount "type=bind,source=$PWD,target=/workspace,readonly" -w /workspace python:3.12-slim python -B backend/scripts/package_beeline.py --check
-```
-
-AGENT PACKAGE: CURRENT / exit 0 — все 12 исходных файлов, состав ZIP и manifest совпадают. AGENT PACKAGE: OUTDATED / exit 1 — есть отличие, отсутствующий файл или повреждённый пакет. Сравниваются все runtime-файлы из FILES, а не только agent.py. Проверку выполнять после merge агента и перед согласованным commit/deploy. При запуске Heroku соседние исходники недоступны, поэтому startup проверяет только целостность пакета и не проверяет его актуальность относительно репозитория.
+В Docker исходники агента доступны по /app/beeline_agent через read-only mount. Backend находится в /app/backend. Образ также включает обе папки из одного checkout; отдельного генерируемого экземпляра кода в репозитории нет. Зависимости агента должны быть установлены через backend/requirements.txt.
 
 ## Heroku
 
-Сохранить APP_BASE=backend, текущие buildpacks, Procfile, DATABASE_URL и Config Vars. Новые env-переменные не требуются.
+Репозиторий подготовлен к сборке всего monorepo. В корне находятся Procfile, requirements.txt и .python-version. DevOps отдельно удаляет APP_BASE и monorepo buildpack, оставляет heroku/python и сохраняет существующие DATABASE_URL и приложение. До этого изменения новая схема на старом deployment работать не будет.
 
-Deployment выполняется вручную, только после отдельного разрешения на commit и push. После фиксации проверенных изменений в main:
+После отдельно согласованного commit в main и настройки Heroku будущая команда:
 
 ```sh
 git push heroku main
 ```
 
-Незафиксированные изменения эта команда не отправляет. APP_BASE=backend, lstoll/heroku-buildpack-monorepo, heroku/python, Procfile и DATABASE_URL сохраняются. Для обновления объяснений агента новая миграция не требуется: используются существующие agent_runs, pilot_results и campaign_results. Существующая миграция 0002 должна быть уже применена; проверка: heroku run "alembic current" --app hackalem-backend.
-
-После deployment проверить /health, /api/case/summary и SHA агента, затем запуск через /docs. CORS_ORIGINS должен содержать origin frontend. Локальная проверка ниже не обращается к production.
+Переход на загрузку исходников не требует новой миграции. Существующая модель explanation из текущего main требует уже имеющуюся миграцию 0003. После deployment проверить /health, /api/case/summary и SHA агента, затем запуск через /docs.
 
 ## Полная локальная проверка
 
-Из корня репозитория, PowerShell:
+Из корня репозитория:
 
-```powershell
-python -B backend/scripts/package_beeline.py --check
+```sh
 docker compose -f backend/docker-compose.yml up --build -d --wait
-Get-Content -Raw -Encoding utf8 backend/scripts/check_beeline.py | docker compose -f backend/docker-compose.yml exec -T backend python -B -
+docker compose -f backend/docker-compose.yml exec -T backend python -B -m scripts.check_beeline
 ```
 
-Первая команда требует Python; Docker-эквивалент указан выше. Для Bash последняя команда: docker compose -f backend/docker-compose.yml exec -T backend python -B - < backend/scripts/check_beeline.py.
+Проверка допускается только с hostname БД postgres, работает через localhost контейнера и создаёт один обычный запуск в локальной PostgreSQL. Проверяет health/docs, все пять endpoints, старые поля, оценки, trace, JSONB-записи, лимиты и официальный evaluate_agent(). CSV из API сравнивается с build_submission() при официальном seed=42 без записи в исходную папку агента. Сценарий ошибки основного плана отдельно проверяет адаптер и fallback без записи искусственного результата в БД и без изменения исходников агента.
 
-Проверка допускается только с hostname БД postgres, работает через localhost контейнера и создаёт один обычный запуск в локальной PostgreSQL. Проверяет health/docs, все пять endpoints, старые поля, новые оценки, trace, JSONB-записи, лимиты и официальный evaluate_agent(). CSV сравнивается с build_submission() и make_submission.py при официальном seed=42. Сценарий ошибки основного плана отдельно проверяет адаптер и fallback без записи искусственного результата в БД и без изменения исходников агента. incremental_trace_observed показывает, успел ли polling увидеть промежуточный trace; окончательное сохранение проверяется всегда.
+incremental_trace_observed показывает, успел ли polling увидеть промежуточный trace; окончательное сохранение проверяется всегда. Существующий скрипт check_beeline.py сохранён, поскольку проверяет интеграцию API и PostgreSQL.
 
 ## Официальная проверка в Docker
 
+Из backend:
+
 ```sh
-docker compose exec backend python -c "import os, runpy; from app.core.beeline import agent_directory; p=agent_directory(); os.chdir(p); runpy.run_path(str(p/'local_eval.py'), run_name='__main__')"
-docker compose exec backend python -c "import os, runpy; from app.core.beeline import agent_directory; p=agent_directory(); os.chdir(p); runpy.run_path(str(p/'make_submission.py'), run_name='__main__'); print((p/'submission.csv').read_text())"
+docker compose exec backend python -B -c "import os; from app.core.beeline import agent_directory; os.chdir(agent_directory()); from agent import Agent; from local_eval import evaluate_agent; result=evaluate_agent(Agent(verbose=False), seed=42); assert result['status']=='PASS'"
 ```
 
-Официальные скрипты выполняются во временной распакованной копии; исходная папка beeline_agent/ не меняется. API хранит CSV каждого запуска в PostgreSQL, поэтому для frontend файловая система Heroku не нужна.
+Для получения submission используется API или build_submission() с возвратом CSV в памяти. Не запускать make_submission.py с записью в каталог агента: в Compose он подключён read-only. CSV каждого запуска хранится в PostgreSQL.

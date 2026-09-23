@@ -36,6 +36,8 @@ PostgreSQL доступен только внутри Docker по имени pos
 docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
-Compose предназначен для локальной разработки: API опубликован на 127.0.0.1:8000, app и alembic подключены с хоста. После изменения Python-кода: `docker compose restart backend`; после изменения requirements.txt: `docker compose up --build -d`.
+Compose предназначен для локальной разработки: API опубликован на 127.0.0.1:8000, backend подключён в /app/backend read-only, alembic доступен для записи, beeline_agent подключён в /app/beeline_agent read-only. Контекст сборки — корень monorepo, Dockerfile — backend/Dockerfile. После изменения Python-кода: `docker compose restart backend`; после изменения backend/requirements.txt: `docker compose up --build -d`.
 
 CORS_ORIGINS — JSON-массив разрешённых origins. OPENAI_API_KEY можно оставить пустым до подключения агента. Пароль в примере предназначен только для локальной разработки; при замене согласовать POSTGRES_PASSWORD и DATABASE_URL. Изменение POSTGRES_* не меняет пользователей уже созданного volume.
+
+Из корня репозитория запуск: `docker compose -f backend/docker-compose.yml up --build -d`. BEELINE_AGENT_DIR внутри Compose задаётся как /app/beeline_agent. После изменения агента перезапустить backend. Полная проверка: `docker compose -f backend/docker-compose.yml exec -T backend python -B -m scripts.check_beeline`. Она создаёт один локальный запуск и не меняет исходники агента.

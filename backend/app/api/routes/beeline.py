@@ -47,7 +47,7 @@ async def case_summary() -> dict:
     try:
         return await asyncio.to_thread(get_case_summary)
     except (FileNotFoundError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail="Beeline data package unavailable") from exc
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/agent/run", status_code=202, response_model=RunResponse)
@@ -59,7 +59,7 @@ async def start_run(
     try:
         await asyncio.to_thread(agent_directory)
     except (FileNotFoundError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail="Beeline data package unavailable") from exc
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     try:
         run = await create_run(db, (request or RunRequest()).seed)
     except RunInProgress as exc:

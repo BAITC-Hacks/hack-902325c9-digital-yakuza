@@ -1,10 +1,10 @@
 import asyncio
-import contextlib
 import hashlib
 import io
 import json
 import os
 import time
+from pathlib import Path
 from unittest.mock import patch
 from urllib.request import Request, urlopen
 from uuid import UUID
@@ -121,9 +121,10 @@ def main():
     directory = agent_directory()
     import agent
     from local_eval import evaluate_agent
-    from make_submission import build_submission, CAMPAIGN_COLUMNS, SUBMISSION_SEED, main as make_submission
+    from make_submission import build_submission, CAMPAIGN_COLUMNS, SUBMISSION_SEED
     from mock_environment import make_mock_env
 
+    assert Path(agent.__file__).resolve() == directory / "agent.py"
     assert summary["agent_sha256"] == hashlib.sha256((directory / "agent.py").read_bytes()).hexdigest()
     strategy = summary["strategy"]
     assert strategy["max_pilot_budget_fraction"] == agent.EXPLORE_BUDGET_SHARE
@@ -151,9 +152,6 @@ def main():
         assert run["metrics"][key] == official[key], key
     expected = build_submission(agent.Agent(verbose=False)).to_csv(index=False)
     assert csv.decode() == expected
-    with contextlib.redirect_stdout(io.StringIO()):
-        make_submission()
-    assert (directory / "submission.csv").read_text() == expected
     assert list(pd.read_csv(io.BytesIO(csv)).columns) == CAMPAIGN_COLUMNS
     check_fallback(agent.Agent, make_mock_env)
     asyncio.run(check_database(run, pilots))

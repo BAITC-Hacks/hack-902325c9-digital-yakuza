@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import SecretStr
@@ -16,6 +17,7 @@ class Settings(BaseSettings):
     database_url: SecretStr
     cors_origins: list[str]
     openai_api_key: SecretStr = SecretStr("")
+    beeline_agent_dir: Path | None = None
 
 
 @lru_cache
