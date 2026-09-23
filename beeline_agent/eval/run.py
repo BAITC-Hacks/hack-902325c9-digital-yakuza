@@ -5,6 +5,7 @@
     python -m eval.run                         # 30 тренировочных миров, сценарий random
     python -m eval.run --worlds 100 --scenario all
     python -m eval.run --split control         # контрольные миры: смотреть один раз в конце
+    python -m eval.run --source simple         # простые миры вместо генератора Тимура (sim/worlds.py)
 
 Миры делятся на тренировочные (seed 0…) и контрольные (seed 10 000…), чтобы не подогнать
 агента под наш же симулятор. Результат каждого прогона пишется в eval/results/<метка>.csv.
@@ -18,7 +19,6 @@ import numpy as np
 import pandas as pd
 
 from eval.core import run_strategy, upper_bound
-from eval.simple_worlds import SCENARIOS, make_world
 from eval.strategies import STRATEGIES
 
 CONTROL_OFFSET = 10_000
@@ -30,7 +30,16 @@ def world_seeds(split, n):
     return range(start, start + n)
 
 
-def run(worlds, scenarios, split, strategies, env_seed_base=0):
+def world_source(name):
+    if name == "sim":
+        from sim.worlds import list_scenarios, make_world
+        return make_world, tuple(list_scenarios())
+    from eval.simple_worlds import SCENARIOS, make_world
+    return make_world, SCENARIOS
+
+
+def run(worlds, scenarios, split, strategies, env_seed_base=0, source="sim"):
+    make_world, _ = world_source(source)
     rows = []
     for scenario in scenarios:
         for seed in world_seeds(split, worlds):
@@ -64,15 +73,17 @@ def summarize(df):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--worlds", type=int, default=30)
-    ap.add_argument("--scenario", default="random", help=f"один из {SCENARIOS} или all")
+    ap.add_argument("--scenario", default="random", help="сценарий генератора или all")
+    ap.add_argument("--source", choices=["sim", "simple"], default="sim")
     ap.add_argument("--split", choices=["train", "control"], default="train")
     ap.add_argument("--strategies", default=",".join(STRATEGIES))
     ap.add_argument("--label", default=None)
     args = ap.parse_args()
 
-    scenarios = SCENARIOS if args.scenario == "all" else (args.scenario,)
+    _, all_scenarios = world_source(args.source)
+    scenarios = all_scenarios if args.scenario == "all" else (args.scenario,)
     t0 = time.monotonic()
-    df = run(args.worlds, scenarios, args.split, args.strategies.split(","))
+    df = run(args.worlds, scenarios, args.split, args.strategies.split(","), source=args.source)
     RESULTS.mkdir(exist_ok=True)
     label = args.label or time.strftime("%H%M%S")
     df.to_csv(RESULTS / f"{label}.csv", index=False)

@@ -17,7 +17,11 @@ KEYS = ["tariff_from", "arpu_segment", "tariff_to"]
 
 def load_history(root: Path = ROOT):
     """Возвращает (очищенные строки, отчёт о том, что и почему убрано)."""
-    raw = pd.read_csv(root / "data" / "change_tariff.csv")
+    return clean_history(pd.read_csv(root / "data" / "change_tariff.csv"))
+
+
+def clean_history(raw: pd.DataFrame):
+    """Правила чистки (обоснование — prior/README.md). Принимает строки в формате change_tariff.csv."""
     report = {"rows_in_file": int(len(raw))}
 
     df = raw.drop_duplicates()

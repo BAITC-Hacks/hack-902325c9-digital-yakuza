@@ -25,7 +25,7 @@ import numpy as np
 import local_eval
 from agent import Agent
 from eval.core import load_inputs, run_strategy, upper_bound
-from eval.simple_worlds import make_world
+from sim.worlds import make_world
 from eval.strategies import STRATEGIES
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -180,7 +180,7 @@ def r5_submission_fresh():
 
 def main():
     worlds = [make_world(0, "mock")] + [make_world(s, sc) for s in range(3)
-                                         for sc in ("random", "flip", "shift", "stingy")]
+                                         for sc in ("random", "flip", "shift", "stingy", "unknown_rich", "high_rich")]
     t1_matches_local_eval()
     t2_ceiling_is_ceiling(worlds)
     t3_deterministic()
