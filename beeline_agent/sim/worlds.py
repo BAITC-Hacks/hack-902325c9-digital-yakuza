@@ -197,31 +197,31 @@ def _base() -> dict:
 
 
 # ------------------------------------------------------------- искажения
-def _plausible_truth(B: dict, rng, rho: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
-    """Истина из разложения истории: L + C с их неопределённостью; при rho < 1 контраст истории
+def _plausible_truth(base: dict, rng, contrast_keep: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
+    """Истина из разложения истории: L + C с их неопределённостью; при contrast_keep < 1 контраст истории
     переносится лишь частично, остальное — новый шум с той же иерархией (цель, сегмент×цель, ячейка)."""
-    n = len(B["pct_hist"])
-    z_level = rng.standard_normal(B["n_cells"])[B["cell_id"]]            # один сдвиг на страту
-    level = B["level"] + B["level_sd"] * z_level
-    contrast_hist = B["contrast"] + B["contrast_sd"] * rng.standard_normal(n)
-    tau = B["tau"]
-    fresh = (tau["target"] * rng.standard_normal(B["target_id"].max() + 1)[B["target_id"]]
-             + tau["seg_target"] * rng.standard_normal(B["segtarget_id"].max() + 1)[B["segtarget_id"]]
+    n = len(base["pct_hist"])
+    z_level = rng.standard_normal(base["n_cells"])[base["cell_id"]]            # один сдвиг на страту
+    level = base["level"] + base["level_sd"] * z_level
+    contrast_hist = base["contrast"] + base["contrast_sd"] * rng.standard_normal(n)
+    tau = base["tau"]
+    fresh = (tau["target"] * rng.standard_normal(base["target_id"].max() + 1)[base["target_id"]]
+             + tau["seg_target"] * rng.standard_normal(base["segtarget_id"].max() + 1)[base["segtarget_id"]]
              + tau["cell"] * rng.standard_normal(n))
-    contrast = rho * contrast_hist + np.sqrt(max(1.0 - rho ** 2, 0.0)) * fresh
-    return level + contrast, B["conv_base"].copy()
+    contrast = contrast_keep * contrast_hist + np.sqrt(max(1.0 - contrast_keep ** 2, 0.0)) * fresh
+    return level + contrast, base["conv_base"].copy()
 
 
-def _resample(B: dict, rng) -> pd.DataFrame:
+def _resample(base: dict, rng) -> pd.DataFrame:
     """Мок-конструкция по бутстрэпу абонентов истории + мок-fallback на тройках без наблюдений."""
-    ids = rng.choice(B["ids"], size=len(B["ids"]), replace=True)
-    boot = B["raw"].set_index("ID_NUMBER").loc[ids].reset_index()
+    ids = rng.choice(base["ids"], size=len(base["ids"]), replace=True)
+    boot = base["raw"].set_index("ID_NUMBER").loc[ids].reset_index()
     im = _mock_impact_model(boot)
     key = ["tariff_plan_code_from", "tariff_plan_code_to", "arpu_segment"]
-    m = B["grid"].merge(im[key + ["arpu_change_pct", "conversion_rate"]], on=key, how="left")
+    m = base["grid"].merge(im[key + ["arpu_change_pct", "conversion_rate"]], on=key, how="left")
     conv_med = float(im["conversion_rate"].median())
     miss = m["arpu_change_pct"].isna().values
-    fb = [_mock_fallback(f, t, s, B["tariffs"], conv_med) for f, t, s in
+    fb = [_mock_fallback(f, t, s, base["tariffs"], conv_med) for f, t, s in
           zip(m.loc[miss, "tariff_plan_code_from"], m.loc[miss, "tariff_plan_code_to"], m.loc[miss, "arpu_segment"])]
     m.loc[miss, "arpu_change_pct"] = [x[0] for x in fb]
     m.loc[miss, "conversion_rate"] = [x[1] for x in fb]
@@ -237,63 +237,63 @@ def _flip(pct, rng, share):
     return np.where(flip, -pct, pct), int(flip.sum())
 
 
-def _shift(pct, conv, B, rng, share_cells):
+def _shift(pct, conv, base, rng, share_cells):
     """В выбранных ячейках пары (Δ%, conversion) переставляются между целевыми тарифами."""
     pct, conv = pct.copy(), conv.copy()
     shifted = 0
-    for c in range(B["n_cells"]):
+    for c in range(base["n_cells"]):
         if rng.random() >= share_cells:
             continue
-        idx = np.flatnonzero(B["cell_id"] == c)
+        idx = np.flatnonzero(base["cell_id"] == c)
         perm = rng.permutation(idx)
         pct[idx], conv[idx] = pct[perm], conv[perm]
         shifted += 1
     return pct, conv, shifted
 
 
-def _unknown_rich(pct, conv, B, rng, k_range=(2, 4), damp_range=(0.3, 0.7)):
+def _unknown_rich(pct, conv, base, rng, n_rich_range=(2, 4), damp_range=(0.3, 0.7)):
     """Лучшие эффекты — у тарифов без истории: в каждой ячейке 2–4 такие цели получают сильный Δ%
     (80–95-й перцентиль истории сегмента) и заметную conversion; известные цели ослаблены."""
     pct, conv = pct.copy(), conv.copy()
     damp = rng.uniform(*damp_range)
-    known = ~B["is_unseen"]
+    known = ~base["is_unseen"]
     pct[known & (pct > 0)] *= damp
-    for c in range(B["n_cells"]):
-        idx = np.flatnonzero((B["cell_id"] == c) & B["is_unseen"])
-        k = min(len(idx), int(rng.integers(k_range[0], k_range[1] + 1)))
-        rich = rng.choice(idx, size=k, replace=False)
-        lo, hi = B["seg_pct_quantiles"][B["seg"][rich[0]]]
-        pct[rich] = np.abs(rng.uniform(lo, hi, size=k)) + 0.05
-        conv[rich] = rng.uniform(0.10, 0.30, size=k)
+    for c in range(base["n_cells"]):
+        idx = np.flatnonzero((base["cell_id"] == c) & base["is_unseen"])
+        n_rich = min(len(idx), int(rng.integers(n_rich_range[0], n_rich_range[1] + 1)))
+        rich = rng.choice(idx, size=n_rich, replace=False)
+        lo, hi = base["seg_pct_quantiles"][base["seg"][rich[0]]]
+        pct[rich] = np.abs(rng.uniform(lo, hi, size=n_rich)) + 0.05
+        conv[rich] = rng.uniform(0.10, 0.30, size=n_rich)
     return pct, conv, damp
 
 
-def _level_drift(pct, conv, B, rng, k):
-    """Дрейф уровня силы k: реальная аудитория «регрессирует к среднему» иначе, чем история
+def _level_drift(pct, conv, base, rng, strength):
+    """Дрейф уровня силы strength: реальная аудитория «регрессирует к среднему» иначе, чем история
     (сдвиг по сегментам и стратам), и отклик частично перераспределён между целями ячейки."""
-    seg_idx = pd.factorize(B["seg"])[0]
-    d_seg = rng.normal(0.0, 0.25 * k, 3)[seg_idx]
-    d_stratum = rng.normal(0.0, 0.15 * k, B["n_cells"])[B["cell_id"]]
+    seg_idx = pd.factorize(base["seg"])[0]
+    d_seg = rng.normal(0.0, 0.25 * strength, 3)[seg_idx]
+    d_stratum = rng.normal(0.0, 0.15 * strength, base["n_cells"])[base["cell_id"]]
     pct = pct + d_seg + d_stratum
-    lam = float(np.clip(0.3 * k, 0.0, 0.9))
-    rnd = rng.gamma(0.3, 1.0, len(conv))
-    rnd = rnd / np.bincount(B["cell_id"], weights=rnd)[B["cell_id"]]
-    conv = (1 - lam) * conv + lam * rnd
+    conv_mix = float(np.clip(0.3 * strength, 0.0, 0.9))
+    random_share = rng.gamma(0.3, 1.0, len(conv))
+    random_share = random_share / np.bincount(base["cell_id"], weights=random_share)[base["cell_id"]]
+    conv = (1 - conv_mix) * conv + conv_mix * random_share
     first = np.unique(seg_idx, return_index=True)[1]
-    return pct, conv, {"seg_shift": {str(B["seg"][i]): round(float(d_seg[i]), 3) for i in first},
-                       "conv_mix": round(lam, 3)}
+    return pct, conv, {"seg_shift": {str(base["seg"][i]): round(float(d_seg[i]), 3) for i in first},
+                       "conv_mix": round(conv_mix, 3)}
 
 
-def _finalize(pct, conv, B):
+def _finalize(pct, conv, base):
     pct = np.clip(pct, *PCT_CLIP)
     conv = np.clip(conv, 1e-4, CONV_MAX)
-    total = np.bincount(B["cell_id"], weights=conv)[B["cell_id"]]
+    total = np.bincount(base["cell_id"], weights=conv)[base["cell_id"]]
     conv = np.where(total > 1.0, conv / total, conv)          # сумма по целям ячейки ≤ 1
     return pct, conv
 
 
-def _frame(B, pct, conv) -> pd.DataFrame:
-    df = B["grid"].copy()
+def _frame(base, pct, conv) -> pd.DataFrame:
+    df = base["grid"].copy()
     df["arpu_change_pct"] = pct.astype(float)
     df["conversion_rate"] = conv.astype(float)
     return df[COLUMNS].reset_index(drop=True)
@@ -307,21 +307,21 @@ def list_scenarios() -> list[str]:
 def make_world(seed: int, scenario: str = "random") -> World:
     if scenario not in SCENARIOS:
         raise ValueError(f"Неизвестный сценарий {scenario!r}. Доступны: {list_scenarios()}")
-    B = _base()
+    base = _base()
     name = f"{scenario}-{seed}"
     if scenario == "mock":
-        return World(name, seed, _frame(B, B["pct_mock"], B["conv_mock"]),
-                     MockFallback(B["mock_conv_median"]), {"scenario": "mock"})
+        return World(name, seed, _frame(base, base["pct_mock"], base["conv_mock"]),
+                     MockFallback(base["mock_conv_median"]), {"scenario": "mock"})
 
     rng = np.random.default_rng([int(seed), _SCENARIO_ID[scenario]])
     params: dict = {"scenario": scenario}
     if scenario == "resample":
-        table, conv_med = _resample(B, rng)
+        table, conv_med = _resample(base, rng)
         return World(name, int(seed), table, MockFallback(conv_med), params)
     if scenario in STRENGTH_BY_SCENARIO:
         params["strength"] = float(rng.uniform(*(STRENGTH_BY_SCENARIO[scenario] or RANDOM_STRENGTH)))
         params["contrast_rho"] = float(np.clip(1.0 - 0.4 * params["strength"], 0.0, 1.0))
-    pct, conv = _plausible_truth(B, rng, rho=params.get("contrast_rho", 1.0))
+    pct, conv = _plausible_truth(base, rng, contrast_keep=params.get("contrast_rho", 1.0))
 
     if scenario == "noise":
         params["noise_sigma"] = float(rng.uniform(0.3, 0.8))
@@ -331,24 +331,24 @@ def make_world(seed: int, scenario: str = "random") -> World:
         pct, params["flipped"] = _flip(pct, rng, params["flip_share"])
     elif scenario == "shift":
         params["shift_share_cells"] = float(rng.uniform(0.5, 1.0))
-        pct, conv, params["shifted_cells"] = _shift(pct, conv, B, rng, params["shift_share_cells"])
+        pct, conv, params["shifted_cells"] = _shift(pct, conv, base, rng, params["shift_share_cells"])
     elif scenario == "stingy":
         params["scale"] = float(rng.uniform(0.2, 0.4))
         pct = pct * params["scale"]
     elif scenario == "unknown_rich":
-        pct, conv, params["known_damp"] = _unknown_rich(pct, conv, B, rng)
+        pct, conv, params["known_damp"] = _unknown_rich(pct, conv, base, rng)
     elif scenario == "high_rich":
         params["high_shift"] = float(rng.uniform(0.15, 0.40))
-        is_high = B["seg"] == "HIGH"
-        cell_noise = rng.normal(0.0, 0.1, B["n_cells"])[B["cell_id"]]
+        is_high = base["seg"] == "HIGH"
+        cell_noise = rng.normal(0.0, 0.1, base["n_cells"])[base["cell_id"]]
         pct = np.where(is_high, pct + params["high_shift"] + cell_noise, pct)
     elif scenario == "causal":
         # реальная модель посчитана «причинно»: дрейф регрессии к среднему убран (± погрешность плацебо)
-        params["placebo_drift"] = B["placebo_by_segment"]
-        pct = pct - B["placebo_drift"] * float(rng.uniform(0.8, 1.2))
+        params["placebo_drift"] = base["placebo_by_segment"]
+        pct = pct - base["placebo_drift"] * float(rng.uniform(0.8, 1.2))
     elif scenario in STRENGTH_BY_SCENARIO:
-        # сила сдвига k: 0.5 — история почти верна (ρ = 0.8), 2 — контраст почти не переносится (ρ = 0.2)
-        pct, conv, info = _level_drift(pct, conv, B, rng, params["strength"])
+        # сила сдвига strength: 0.5 — история почти верна (ρ = 0.8), 2 — контраст почти не переносится (ρ = 0.2)
+        pct, conv, info = _level_drift(pct, conv, base, rng, params["strength"])
         params.update(info)
         # плюс каждое из «именных» искажений с вероятностью 0.3
         if rng.random() < 0.3:
@@ -359,16 +359,16 @@ def make_world(seed: int, scenario: str = "random") -> World:
             pct, params["flipped"] = _flip(pct, rng, params["flip_share"])
         if rng.random() < 0.3:
             params["shift_share_cells"] = float(rng.uniform(0.2, 0.8))
-            pct, conv, params["shifted_cells"] = _shift(pct, conv, B, rng, params["shift_share_cells"])
+            pct, conv, params["shifted_cells"] = _shift(pct, conv, base, rng, params["shift_share_cells"])
         if rng.random() < 0.3:
-            pct, conv, params["known_damp"] = _unknown_rich(pct, conv, B, rng)
+            pct, conv, params["known_damp"] = _unknown_rich(pct, conv, base, rng)
         params["scale"] = float(np.exp(rng.normal(-0.2, 0.4)))       # от «скупого» до «щедрого» мира
         pct = pct * params["scale"]
         params["conv_scale"] = float(np.exp(rng.normal(0.0, 0.3)))  # другой уровень отклика
         conv = conv * params["conv_scale"]
 
-    pct, conv = _finalize(pct, conv, B)
-    return World(name, int(seed), _frame(B, pct, conv), PriceFallback(0.5), params)
+    pct, conv = _finalize(pct, conv, base)
+    return World(name, int(seed), _frame(base, pct, conv), PriceFallback(0.5), params)
 
 
 def make_suite(n_per_scenario: int = 50, scenarios=None, start_seed: int = 0) -> list[World]:
@@ -383,7 +383,7 @@ _MULT = np.array([0.50, 0.65, 0.85, 1.20])        # push, sms, digital_ads, call
 _COST = np.array([0.0, 4.0, 22.0, 160.0])
 
 
-def _audience(B: dict) -> dict:
+def _audience(base: dict) -> dict:
     """Ячейки аудитории, привязанные к строкам сетки: размер (≤ 5 000 на кампанию) и сумма predicted_arpu."""
     global _AUD
     if _AUD is None:
@@ -391,7 +391,7 @@ def _audience(B: dict) -> dict:
         cells = (prof.dropna(subset=["current_tariff", "arpu_segment"]).sort_values("ID_NUMBER")
                  .groupby(["current_tariff", "arpu_segment"])["predicted_arpu"]
                  .agg(lambda x: (min(len(x), 5000), float(x.head(5000).sum()))))
-        g = B["grid"]
+        g = base["grid"]
         key = list(zip(g["tariff_plan_code_from"], g["arpu_segment"]))
         n = np.array([cells.get(k, (0, 0.0))[0] for k in key], dtype=float)
         a = np.array([cells.get(k, (0, 0.0))[1] for k in key], dtype=float)
@@ -399,20 +399,20 @@ def _audience(B: dict) -> dict:
     return _AUD
 
 
-def _plan_value(pct_choose, conv_choose, pct_true, conv_true, B, contacts=15000, budget=100000.0, max_campaigns=10):
+def _plan_value(pct_choose, conv_choose, pct_true, conv_true, base, contacts=15000, budget=100000.0, max_campaigns=10):
     """Жадный план без пилотов: в каждой ячейке аудитории — лучшая (цель, канал) по «своим» эффектам,
     ячейки по убыванию ожидаемой ценности, лимиты охвата/бюджета/10 кампаний. Возвращает ценность по истине."""
-    aud = _audience(B)
+    aud = _audience(base)
     n, arpu = aud["n"], aud["arpu_sum"]
     r_ch = pct_choose[:, None] * np.minimum(conv_choose[:, None] * _MULT[None, :], 1.0)
     v_ch = r_ch * arpu[:, None] - _COST[None, :] * n[:, None]
     r_true = pct_true[:, None] * np.minimum(conv_true[:, None] * _MULT[None, :], 1.0)
     v_true = r_true * arpu[:, None] - _COST[None, :] * n[:, None]
-    best = pd.DataFrame({"cell": B["cell_id"], "row": np.arange(len(n)), "v": v_ch.max(axis=1)})
+    best = pd.DataFrame({"cell": base["cell_id"], "row": np.arange(len(n)), "v": v_ch.max(axis=1)})
     best = best[n > 0].sort_values("v", ascending=False).drop_duplicates("cell")
-    total, used_c, used_b, k = 0.0, 0, 0.0, 0
+    total, used_c, used_b, n_campaigns = 0.0, 0, 0.0, 0
     for row, v in zip(best["row"], best["v"]):
-        if v <= 0 or k >= max_campaigns:
+        if v <= 0 or n_campaigns >= max_campaigns:
             break
         for ch in np.argsort(-v_ch[row]):                     # самый выгодный канал, который влезает в бюджет
             cost = _COST[ch] * n[row]
@@ -420,34 +420,34 @@ def _plan_value(pct_choose, conv_choose, pct_true, conv_true, B, contacts=15000,
                 total += v_true[row, ch]
                 used_c += n[row]
                 used_b += cost
-                k += 1
+                n_campaigns += 1
                 break
     return total
 
 
 def oracle_gap(world: World) -> dict:
     """Во сколько раз план, знающий истинные эффекты, лучше плана «по истории без разведки» (ТЗ: ~15)."""
-    B = _base()
+    base = _base()
     pct, conv = world.impact_model["arpu_change_pct"].values, world.impact_model["conversion_rate"].values
-    oracle = _plan_value(pct, conv, pct, conv, B)
-    blind = _plan_value(B["pct_mock"], B["conv_mock"], pct, conv, B)
+    oracle = _plan_value(pct, conv, pct, conv, base)
+    blind = _plan_value(base["pct_mock"], base["conv_mock"], pct, conv, base)
     return {"oracle": oracle, "no_exploration": blind,
             "ratio": oracle / blind if blind > 0 else float("inf")}
 
 
 # ------------------------------------------------------------------ проверка
-def _stats(world: World, B: dict) -> dict:
+def _stats(world: World, base: dict) -> dict:
     im = world.impact_model
     pct, conv = im["arpu_change_pct"].values, im["conversion_rate"].values
-    base = pct * conv
-    hist_base = B["pct_mock"] * B["conv_mock"]
-    obs = B["in_mock"]
-    sums = np.bincount(B["cell_id"], weights=conv)
-    best_sms = pd.Series(pct * np.minimum(conv * 0.65, 1.0)).groupby(B["cell_id"]).max()
+    q_world = pct * conv
+    q_hist = base["pct_mock"] * base["conv_mock"]
+    obs = base["in_mock"]
+    sums = np.bincount(base["cell_id"], weights=conv)
+    best_sms = pd.Series(pct * np.minimum(conv * 0.65, 1.0)).groupby(base["cell_id"]).max()
     gap = oracle_gap(world)
     return {"rows": len(im), "pos": float((pct > 0).mean()), "abs_pct": float(np.abs(pct).mean()),
             "conv": float(conv.mean()), "conv_sum_max": float(sums.max()),
-            "corr_hist": float(np.corrcoef(base[obs], hist_base[obs])[0, 1]),
+            "corr_hist": float(np.corrcoef(q_world[obs], q_hist[obs])[0, 1]),
             "best_sms_median": float(best_sms.median()), "gap": min(gap["ratio"], 999.0), "oracle": gap["oracle"],
             "blind_nonpos": float(gap["no_exploration"] <= 0)}
 
@@ -455,8 +455,8 @@ def _stats(world: World, B: dict) -> dict:
 def _check() -> bool:
     ok = True
     t0 = time.perf_counter()
-    B = _base()
-    print(f"База (история, сетка, мок): {time.perf_counter() - t0:.2f} с, троек в сетке {len(B['grid'])}")
+    base = _base()
+    print(f"База (история, сетка, мок): {time.perf_counter() - t0:.2f} с, троек в сетке {len(base['grid'])}")
     print(f"{'сценарий':13s} {'троек':>6s} {'pct>0':>6s} {'|pct|':>6s} {'conv':>6s} {'Σconv':>6s} "
           f"{'corr':>5s} {'лучш.SMS':>8s} {'оракул,млн':>10s} {'оракул/слепой':>13s} {'слепой≤0':>8s} {'время,с':>7s}")
     for scenario in list_scenarios():
@@ -465,7 +465,7 @@ def _check() -> bool:
             t = time.perf_counter()
             w = make_world(seed, scenario)
             times.append(time.perf_counter() - t)
-            stats.append(_stats(w, B))
+            stats.append(_stats(w, base))
         st = {k: float(np.median([s[k] for s in stats])) for k in stats[0]}
         rows_ok = all(s["rows"] == 1260 for s in stats)
         ok &= rows_ok and max(times) < 1.0
@@ -479,14 +479,14 @@ def _check() -> bool:
     # mock совпадает с _mock_impact_model: те же значения на тройках истории, на остальных — мок-fallback
     w = make_world(0, "mock")
     key = ["tariff_plan_code_from", "tariff_plan_code_to", "arpu_segment"]
-    m = B["mock_im"].merge(w.impact_model, on=key, suffixes=("_mock", "_world"))
-    same = (len(m) == len(B["mock_im"])
+    m = base["mock_im"].merge(w.impact_model, on=key, suffixes=("_mock", "_world"))
+    same = (len(m) == len(base["mock_im"])
             and np.allclose(m["arpu_change_pct_mock"], m["arpu_change_pct_world"])
             and np.allclose(m["conversion_rate_mock"], m["conversion_rate_world"]))
-    rest = w.impact_model.merge(B["mock_im"][key], on=key, how="left", indicator=True)
+    rest = w.impact_model.merge(base["mock_im"][key], on=key, how="left", indicator=True)
     rest = rest[rest["_merge"] == "left_only"]
     fb_ok = all(np.allclose(w.fallback_predict(r.tariff_plan_code_from, r.tariff_plan_code_to, r.arpu_segment,
-                                               B["tariffs"], 0.0),
+                                               base["tariffs"], 0.0),
                             (r.arpu_change_pct, r.conversion_rate))
                 for r in rest.head(200).itertuples())
     print(f"mock: совпадает с _mock_impact_model: {'да' if same and fb_ok else 'НЕТ'} "
