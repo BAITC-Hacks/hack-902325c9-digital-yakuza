@@ -1,0 +1,96 @@
+{
+  "ids": {
+    "change_tariff": 14817,
+    "arpu_monthly": 14991,
+    "traffic": 14875,
+    "in_all_three": 14727,
+    "overlap_with_audience": 0
+  },
+  "change_months": [
+    "2026-10"
+  ],
+  "prev_equals_mean_jul_sep_share": 1.0,
+  "ratio_tails": {
+    "le_0": 0.075,
+    "ge_10x": 0.047,
+    "prev_le_0": 1407,
+    "next_eq_0": 1609
+  },
+  "placebo": {
+    "log1p_ratio": {
+      "LOW": 2.454,
+      "MID": -0.281,
+      "HIGH": -0.207
+    },
+    "clipped_pct": {
+      "LOW": 0.881,
+      "MID": 0.228,
+      "HIGH": -0.041
+    },
+    "real_switches_clipped_pct": {
+      "HIGH": -0.129,
+      "LOW": 1.021,
+      "MID": 0.257
+    },
+    "high_downsell_share_placebo": 0.428
+  },
+  "contrast_reliability_pct": {
+    "target": {
+      "r": 0.923,
+      "spearman_brown": 0.96
+    },
+    "seg_target": {
+      "r": 0.851,
+      "spearman_brown": 0.92
+    },
+    "cell": {
+      "r": 0.55,
+      "spearman_brown": 0.709
+    }
+  },
+  "contrast_reliability_log": {
+    "target": {
+      "r": 0.923,
+      "spearman_brown": 0.96
+    },
+    "seg_target": {
+      "r": 0.848,
+      "spearman_brown": 0.918
+    },
+    "cell": {
+      "r": 0.389,
+      "spearman_brown": 0.561
+    }
+  },
+  "coverage": {
+    "targets_in_history": 9,
+    "relevant_triples": 1260,
+    "zero_obs_share": 0.642,
+    "ge30_share": 0.083
+  },
+  "shift": {
+    "high_share": {
+      "audience": 0.594,
+      "history": 0.348
+    },
+    "adversarial": {
+      "arpu_only": 0.694,
+      "all_features": 0.733,
+      "importance_weight_ess_share": 0.544
+    }
+  },
+  "overage": {
+    "data_over_to_bigger_data": 0.748,
+    "no_over_to_bigger_data": 0.442,
+    "paid_min_to_more_min": 0.533,
+    "no_paid_to_more_min": 0.48
+  },
+  "pilot_noise": {
+    "snr_per_customer_from_30": 0.1231,
+    "snr_per_customer_from_200": 0.1238,
+    "wrong_sign_at_100": 0.108,
+    "n_for_90pct": 108,
+    "n_for_95pct": 177,
+    "implied_effect_at_std_0.804": 0.099
+  }
+}
