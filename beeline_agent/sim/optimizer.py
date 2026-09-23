@@ -6,10 +6,12 @@
 только запас в оценке потолка? Используется в sim/headroom.py (колонка known_milp).
 
 Кампания — ровно то, что разрешает ТЗ: сегмент ARPU × (фильтр трафика) × (фильтр звонков) ×
-набор текущих тарифов × целевой тариф × канал. Кандидаты: для каждого сочетания сегмент × фильтры ×
-цель × канал берём тарифы с положительной чистой ценностью по убыванию ценности на абонента,
-в трёх размерах — до 5 000 (лимит кампании), 2 000 и 700 абонентов (чтобы влезали дорогие каналы),
-плюс «все выгодные тарифы» с обрезкой средой до первых 5 000 по ID (ценность считается ровно по ним).
+набор текущих тарифов × целевой тариф × канал. Кандидаты в каждой группе сегмент × фильтры — три семейства
+наборов тарифов: (1) все тарифы, выгодные для пары цель × канал; (2) каждый тариф — к своей лучшей цели;
+(3) каждый тариф — к своей лучшей паре цель × канал. Семейства (2)–(3) подняли результат с 85% до 92% потолка
+на 60 мирах (каждый мир лучше). Размеры — до 5 000 (лимит кампании), 2 000 и 700 абонентов (чтобы влезали
+дорогие каналы), плюс «как есть» с обрезкой средой до первых 5 000 по ID (ценность считается ровно по ним).
+После решения — до двух раундов добора кампаний из незанятых абонентов.
 Ограничения: не больше 10 кампаний, 15 000 контактов и 100 000 бюджета; каждая группа абонентов
 (тариф × сегмент × трафик × звонки) — не больше чем в одной кампании (повторный контакт стоит денег,
 а эффект засчитывается один раз). Пилоты не нужны — эффекты известны.
@@ -49,10 +51,19 @@ def lift_table(world, dict_tariff: pd.DataFrame, channels: dict) -> dict:
 
 def _candidates(atoms: pd.DataFrame, customers: pd.DataFrame, lift: dict, targets: list, channels: dict,
                 exclude: frozenset = frozenset(), seen: set | None = None) -> list:
-    """Кандидаты-кампании; exclude — группы абонентов, уже занятые выбранными кампаниями (добор остатков)."""
+    """
+    Кандидаты-кампании. Три семейства наборов тарифов в каждой группе сегмент × трафик × звонки:
+      (1) цель × канал: все тарифы, для которых эта пара выгодна;
+      (2) канал: каждый тариф идёт к своей лучшей цели — тарифы с одной лучшей целью в одной кампании;
+      (3) каждый тариф — к своей лучшей паре цель × канал.
+    Каждый набор — в размерах до 5 000 / 2 000 / 700 абонентов (по убыванию ценности на абонента) и «как есть»
+    с обрезкой средой до первых 5 000 по ID. exclude — группы абонентов, уже занятые выбранными кампаниями.
+    """
     cands, seen = [], (set() if seen is None else seen)
     codes = sorted(customers["current_tariff"].unique())
     code_idx = {c: i for i, c in enumerate(codes)}
+    ch_names = list(channels)
+    ch_cost = np.array([channels[c]["cost_per_contact"] for c in ch_names], dtype=float)
     for s in SEGMENTS:
         a_s = atoms[atoms["arpu_segment"] == s]
         for d in (None,) + DATA_SEGMENTS:
@@ -74,48 +85,61 @@ def _candidates(atoms: pd.DataFrame, customers: pd.DataFrame, lift: dict, target
                                  & ((customers["call_segment"] == k) if k is not None else True)]
                 cust_tariff = cust["current_tariff"].map(code_idx).values
                 cust_arpu = cust["predicted_arpu"].values
-                for t in targets:
-                    for ch, spec in channels.items():
-                        cost = spec["cost_per_contact"]
-                        l_arr = np.array([lift.get((f, s, t, ch), 0.0) for f in by_tariff.index])
-                        value = l_arr * by_tariff["arpu"].values - cost * by_tariff["n"].values
-                        good = np.flatnonzero(value > 0)
-                        if len(good) == 0:
-                            continue
-                        good = good[np.argsort(-(value[good] / by_tariff["n"].values[good]))]
-                        if int(by_tariff["n"].values[good].sum()) > SIZE_CAPS[0]:
-                            # все выгодные тарифы, обрезка средой до первых 5 000 по ID: считаем ровно эту выборку
-                            lift_vec = np.zeros(len(codes))
-                            for j in good:
-                                lift_vec[code_idx[by_tariff.index[j]]] = l_arr[j]
-                            chosen = np.flatnonzero(lift_vec[cust_tariff] > 0)[:SIZE_CAPS[0]]
-                            atom_ids = tuple(sorted(a for j in good for a in by_tariff["atoms"].values[j]))
-                            key = (t, ch, atom_ids, "cut")
-                            if key not in seen:
-                                seen.add(key)
-                                v = float((lift_vec[cust_tariff[chosen]] * cust_arpu[chosen]).sum() - cost * len(chosen))
-                                cands.append({"segment": s, "data": d, "call": k, "target": t, "channel": ch,
-                                              "tariffs": tuple(sorted(by_tariff.index[j] for j in good)),
-                                              "n": len(chosen), "cost": cost * len(chosen), "value": v,
-                                              "atoms": atom_ids})
-                        for cap in SIZE_CAPS:
-                            pick, size = [], 0
-                            for j in good:                       # по убыванию ценности на абонента, что влезает
-                                n_j = int(by_tariff["n"].values[j])
-                                if size + n_j <= cap:
-                                    pick.append(j)
-                                    size += n_j
-                            if not pick:
-                                continue
-                            atom_ids = tuple(sorted(a for j in pick for a in by_tariff["atoms"].values[j]))
-                            key = (t, ch, atom_ids)
-                            if key in seen:
-                                continue
+                n_arr, arpu_arr = by_tariff["n"].values.astype(float), by_tariff["arpu"].values
+                tariffs_here = list(by_tariff.index)
+                # lift[j, t, c] и чистая ценность value[j, t, c] тарифа j при цели t и канале c
+                L = np.array([[[lift.get((f, s, t, c), 0.0) for c in ch_names] for t in targets] for f in tariffs_here])
+                V = L * arpu_arr[:, None, None] - ch_cost[None, None, :] * n_arr[:, None, None]
+
+                def emit(ti, ci, idx):
+                    t, ch, cost = targets[ti], ch_names[ci], ch_cost[ci]
+                    idx = [j for j in idx if V[j, ti, ci] > 0]
+                    if not idx:
+                        return
+                    idx = sorted(idx, key=lambda j: -V[j, ti, ci] / n_arr[j])
+                    if n_arr[idx].sum() > SIZE_CAPS[0]:
+                        lift_vec = np.zeros(len(codes))
+                        for j in idx:
+                            lift_vec[code_idx[tariffs_here[j]]] = L[j, ti, ci]
+                        chosen = np.flatnonzero(lift_vec[cust_tariff] > 0)[:SIZE_CAPS[0]]
+                        atom_ids = tuple(sorted(a for j in idx for a in by_tariff["atoms"].values[j]))
+                        key = (t, ch, atom_ids, "cut")
+                        if key not in seen:
                             seen.add(key)
+                            v = float((lift_vec[cust_tariff[chosen]] * cust_arpu[chosen]).sum() - cost * len(chosen))
                             cands.append({"segment": s, "data": d, "call": k, "target": t, "channel": ch,
-                                          "tariffs": tuple(sorted(by_tariff.index[j] for j in pick)),
-                                          "n": size, "cost": cost * size, "value": float(value[pick].sum()),
-                                          "atoms": atom_ids})
+                                          "tariffs": tuple(sorted(tariffs_here[j] for j in idx)),
+                                          "n": len(chosen), "cost": cost * len(chosen), "value": v, "atoms": atom_ids})
+                    for cap in SIZE_CAPS:
+                        pick, size = [], 0
+                        for j in idx:                           # по убыванию ценности на абонента, что влезает
+                            if size + n_arr[j] <= cap:
+                                pick.append(j)
+                                size += int(n_arr[j])
+                        if not pick:
+                            continue
+                        atom_ids = tuple(sorted(a for j in pick for a in by_tariff["atoms"].values[j]))
+                        key = (t, ch, atom_ids)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        cands.append({"segment": s, "data": d, "call": k, "target": t, "channel": ch,
+                                      "tariffs": tuple(sorted(tariffs_here[j] for j in pick)),
+                                      "n": size, "cost": cost * size, "value": float(V[pick, ti, ci].sum()),
+                                      "atoms": atom_ids})
+
+                all_j = range(len(tariffs_here))
+                for ti in range(len(targets)):                  # (1) цель × канал
+                    for ci in range(len(ch_names)):
+                        emit(ti, ci, all_j)
+                for ci in range(len(ch_names)):                 # (2) каждый тариф — к своей лучшей цели
+                    best_t = V[:, :, ci].argmax(axis=1)
+                    for ti in set(best_t.tolist()):
+                        emit(ti, ci, [j for j in all_j if best_t[j] == ti])
+                flat = V.reshape(len(tariffs_here), -1).argmax(axis=1)   # (3) к лучшей паре цель × канал
+                for code in set(flat.tolist()):
+                    ti, ci = divmod(code, len(ch_names))
+                    emit(ti, ci, [j for j in all_j if flat[j] == code])
     return cands
 
 
