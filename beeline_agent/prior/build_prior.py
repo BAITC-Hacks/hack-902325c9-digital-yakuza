@@ -51,18 +51,21 @@ import hier  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))       # mock_environment — функция среды
 from history import KEYS, ROOT, clean_history, pooled_sigma2  # noqa: E402
 from unseen import package_fit  # noqa: E402
+from scoring_core import CHANNELS as ENV_CHANNELS  # noqa: E402
 
 PRIOR_MODE = "raw"           # что кладём в PRIOR (его читает текущий агент):
                              #   "raw"  — среднее Δ% × доля перехода, как в моке (лучше в связке с текущим агентом,
                              #            см. prior/README.md, «A/B на мирах»);
                              #   "hier" — уровень страты + контраст цели (точнее по истории, для структурного постериора)
-PRIOR_TUPLE = "q_se"         # "q_se" — (q, q_se, n_obs), договорённость с агентом; "legacy" — старый (q, n_obs, pct_std)
 CONV_ALPHA = 10.0            # сила сглаживания доли переходов
 # у троек без истории доля перехода — допущение (fallback × пакет); её относительная неопределённость берётся
 # из данных: коэффициент вариации доли перехода между тройками с историей (≈0.9)
 VAR_PRIOR_DOF = 5            # сколько «наблюдений» весит разброс сегмента при оценке pct_std
 BUDGET_VALUE = 10.0          # у.е. прироста, которые приносит 1 у.е. бюджета в финальном плане (цена бюджета)
-CHANNELS = [("push", 0.0, 0.50), ("sms", 4.0, 0.65), ("digital_ads", 22.0, 0.85), ("call", 160.0, 1.20)]
+# каналы — из правил подсчёта организаторов, по возрастанию цены: (имя, цена контакта, множитель)
+CHANNELS = sorted(((name, float(spec["cost_per_contact"]), spec["conversion_multiplier"])
+                   for name, spec in ENV_CHANNELS.items()), key=lambda c: c[1])
+PRIOR_FORMAT = ("q", "q_se", "n_obs")   # договорённость с агентом (проверка R6 тренажёра)
 START, END = "# === PRIOR START (генерируется prior/build_prior.py) ===", "# === PRIOR END ==="
 
 
@@ -93,7 +96,6 @@ def _decompose(df: pd.DataFrame, model: dict) -> pd.DataFrame:
     df["q"] = df["pct_hat"] * df["conversion"]
     df["q_level"] = df["level"] * df["conversion"]
     df["q_contrast"] = df["contrast"] * df["conversion"]
-    df["q_sd"] = df["pct_sd"] * df["conversion"]
     return df
 
 
@@ -195,10 +197,7 @@ def _dict_lines(name: str, table: pd.DataFrame, cols: list, comment: str) -> lis
 
 def embed(seen: pd.DataFrame, unseen: pd.DataFrame, agent_path: Path) -> None:
     both = pd.concat([seen, unseen], ignore_index=True)
-    if PRIOR_TUPLE == "legacy":
-        fmt, cols = ("q", "n_obs", "pct_std"), ["prior_q", "n_obs", "prior_std"]
-    else:
-        fmt, cols = ("q", "q_se", "n_obs"), ["prior_q", "prior_se", "n_obs"]
+    fmt, cols = PRIOR_FORMAT, ["prior_q", "prior_se", "n_obs"]
     lines = [START,
              "# Априор: что история смен тарифов говорит об эффекте кампании.",
              "# Ключ везде — (текущий тариф, сегмент ARPU, целевой тариф).",
@@ -255,7 +254,7 @@ def main() -> None:
     print(f"Перенос контраста на 12 тарифов без истории по атрибутам: LOO RMSE {tr['kernel_loo_rmse']:.3f} "
           f"против {tr['zero_rmse']:.3f} у нуля → метод: {tr['method']}")
     moved = (np.sign(seen["q_hier"]) != np.sign(seen["q_raw"])).sum()
-    print(f"Формат: PRIOR_FORMAT = {('q', 'q_se', 'n_obs') if PRIOR_TUPLE != 'legacy' else ('q', 'n_obs', 'pct_std')}; "
+    print(f"Формат: PRIOR_FORMAT = {PRIOR_FORMAT}; "
           f"q_se медиана {seen['prior_se'].median():.4f} (PRIOR), {unseen['q_se'].median():.4f} (PRIOR_UNSEEN)")
     print(f"PRIOR (режим {PRIOR_MODE}): {len(seen)} троек, q>0 у {(seen['prior_q'] > 0).sum()}; "
           f"иерархическая оценка q>0 у {(seen['q_hier'] > 0).sum()}, знак отличается у {moved}; "
