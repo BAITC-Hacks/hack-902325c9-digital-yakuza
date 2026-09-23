@@ -51,5 +51,6 @@
     "tariff_9": 0.2276
   },
   "conv_fallback": 0.09221311475409837,
+  "unseen_conv_cv": 0.9293192126348943,
   "budget_value": 10.0
 }
