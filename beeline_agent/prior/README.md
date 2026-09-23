@@ -8,6 +8,7 @@ python prior/build_prior.py          # чистка + оценка + вшивк�
 python prior/evaluate_estimators.py  # сравнение способов оценки (split-half), ~10 с
 python prior/similarity.py           # сходство истории и аудитории, ~5 с
 python prior/verify_prior.py         # независимая перепроверка всех чисел приора, ~5 с
+python prior/regime.py --worlds 15   # проверка режима по пилотам: калибровка на мирах (см. sim/README.md), ~1 мин
 ```
 
 | Словарь в `agent.py` | Что внутри |
