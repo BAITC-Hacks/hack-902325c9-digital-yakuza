@@ -9,7 +9,7 @@ SOURCE = BACKEND.parent / "beeline_agent"
 DESTINATION = BACKEND / "vendor" / "beeline_agent.zip"
 FILES = (
     "agent.py", "environment.py", "mock_environment.py", "scoring_core.py",
-    "local_eval.py", "make_submission.py", "requirements.txt",
+    "local_eval.py", "make_submission.py", "requirements.txt", "workflow.py",
     "customer_profile.csv", "tariff_dictionary.csv", "feature_dictionary.csv",
     "data/change_tariff.csv", "data/dict_tariff.csv",
 )

@@ -38,6 +38,7 @@ async def serialize_run(db, run):
         fallback_reason=metrics.get("fallback_reason"),
         estimate_source=metrics.get("estimate_source"),
         risk_info=metrics.get("risk_info"),
+        explanation=run.explanation,
     )
 
 

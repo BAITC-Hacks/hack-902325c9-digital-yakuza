@@ -26,6 +26,7 @@ class RunResponse(BaseModel):
     fallback_reason: str | None = None
     estimate_source: str | None = None
     risk_info: dict[str, Any] | None = None
+    explanation: dict[str, Any] | None = None
 
 
 class PilotsResponse(BaseModel):
