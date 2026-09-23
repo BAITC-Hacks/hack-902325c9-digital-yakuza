@@ -17,14 +17,15 @@ export function RiskInfo({ value }: { value?: Record<string, unknown> | null }) 
 export function Explanation({ run, pending }: { run: AgentRun | null; pending: boolean }) {
   const report = explanationReport(run);
   const rendered = report?.rendered;
-  const source = report?.source === 'llm' ? 'ИИ (luna)' : report?.source === 'template' ? 'Шаблон' : null;
+  const source = run?.explanation?.explanation?.source;
+  const sourceLabel = source === 'llm' ? 'ИИ (luna)' : source === 'template' ? 'Шаблон' : 'Источник не указан';
   const stopReason = run?.stop_reason ?? run?.metrics?.stop_reason;
   const estimateSource = run?.estimate_source ?? run?.metrics?.estimate_source;
   const risk = run?.risk_info ?? run?.metrics?.risk_info;
   const hasContent = rendered && (rendered.summary || rendered.campaigns?.length || rendered.warnings?.length || rendered.next_steps?.length);
 
   return <section id="explanation" aria-labelledby="explanation-title">
-    <div className="section-heading"><h2 id="explanation-title">Почему такой план</h2>{source && <span className="tag">{source}</span>}</div>
+    <div className="section-heading"><h2 id="explanation-title">Почему такой план</h2><span className="tag">{sourceLabel}</span></div>
     {pending && <Notice>План готов. Ожидаем объяснение от сервера…</Notice>}
     {!hasContent && !pending && <Notice>Объяснение недоступно</Notice>}
     {hasContent && <div className="panel explanation-panel">
