@@ -20,6 +20,7 @@ Workflow аналитика: агент → финальный план и CSV �
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -110,6 +111,15 @@ def build_facts(run):
             "gross_lift": detail.get("gross_lift"), "negative": detail.get("n_negative"),
             "mu": log.get("mu"), "lcb": log.get("lcb"), "pilots": log.get("pilots")}}
 
+    # связи «кампания → её пилоты» формирует код: пилот проверял ровно ту гипотезу, из которой собрана кампания
+    links = {}
+    for i, camp in enumerate(run["campaigns"], 1):
+        log = plan_logs[i - 1] if i - 1 < len(plan_logs) else {}    # у запасной кампании записи plan_add нет
+        pilots_of = [f"P{j}" for j, p in enumerate(pilot_logs, 1) if log and p["candidate"] == log.get("candidate")]
+        links[f"C{i}"] = {"pilots": pilots_of,
+                          "tariffs": {camp["target_tariff"], *(camp.get("filter_current_tariff") or "").split(";")}}
+        facts[f"C{i}"]["fields"]["pilot_ids"] = ",".join(pilots_of) or "нет"
+
     for j, p in enumerate(pilot_logs, 1):
         hist = run["pilot_history"][j - 1] if j - 1 < len(run["pilot_history"]) else {}
         segment, target = p["candidate"].split(":")[:2]
@@ -139,7 +149,7 @@ def build_facts(run):
     if facts["M"]["fields"]["remaining_budget"] > 0.3 * env.total_budget:
         warnings.append(("info", "Больше трети бюджета не распределено ({M.remaining_budget}): "
                                  "экономический выбор каналов в этой версии не реализован.", ["M"]))
-    return facts, [{"severity": s, "text": t, "fact_ids": ids} for s, t, ids in warnings]
+    return facts, [{"severity": s, "text": t, "fact_ids": ids} for s, t, ids in warnings], links
 
 
 def fmt(field, value):
@@ -196,6 +206,8 @@ INSTRUCTIONS = """Ты объясняешь аналитику маркетин�
 2. НЕ пиши цифры сам. Любое число указывай ссылкой {ID.поле}, например {C1.contacts} или {P3.observed}.
    Названия тарифов (tariff_8) и id фактов (C1, P2) писать можно.
 3. У каждого объяснения, предупреждения и шага перечисли fact_ids, на которые оно опирается.
+   Объясни КАЖДУЮ кампанию C… ровно один раз. В объяснении кампании ссылайся только на её пилоты из
+   campaign_pilots (связи задал код), на M и на кампании; чужие пилоты там не упоминай.
 4. Предположение, которого нет в фактах, начинай словом «Гипотеза:».
 5. Предупреждения: что может пойти не так и почему это существенно (или нет), какие данные противоречат.
 6. next_steps: что аналитику проверить дальше, конкретно и коротко.
@@ -204,8 +216,22 @@ INSTRUCTIONS = """Ты объясняешь аналитику маркетин�
 Пиши по-русски, коротко и по делу."""
 
 
-def validate(answer, facts):
-    """Список проблем ответа модели (пусто = годен)."""
+ID_MENTION = re.compile(r"\{([A-Z]+[0-9]*)\.[a-z_]+\}|\b([CPW][0-9]+|M)\b")
+TARIFF_MENTION = re.compile(r"tariff_[0-9]+")
+
+
+def _mentioned_ids(text):
+    return {a or b for a, b in ID_MENTION.findall(text)}
+
+
+def validate(answer, facts, links):
+    """
+    Список проблем ответа модели (пусто = годен). Кроме синтаксиса проверяем смысл ссылок:
+    - объяснены все кампании плана, без повторов и лишних, id — именно кампании;
+    - в объяснении кампании упоминаются только её пилоты (связи формирует код), итоги M и кампании;
+    - упомянутые в объяснении кампании тарифы относятся к ней;
+    - цифр вне ссылок нет, все ссылки и id существуют.
+    """
     problems = []
     texts = [answer["summary"]] + [c["explanation"] for c in answer["campaigns"]] + \
             [w["text"] for w in answer["warnings"]] + [s["text"] for s in answer["next_steps"]]
@@ -215,40 +241,106 @@ def validate(answer, facts):
                 problems.append(f"неизвестная ссылка {{{fid}.{field}}}")
         if re.search(r"[0-9]", ALLOWED_TOKENS.sub("", text)):
             problems.append(f"цифры вне ссылок: «{text[:60]}…»")
-    ids = [i for item in answer["campaigns"] + answer["warnings"] + answer["next_steps"] for i in item["fact_ids"]]
-    ids += [c["id"] for c in answer["campaigns"]]
-    problems += [f"неизвестный id {i}" for i in ids if i not in facts]
+        problems += [f"неизвестный id {i}" for i in sorted(_mentioned_ids(text)) if i not in facts]
+
+    ids = [c["id"] for c in answer["campaigns"]]
+    if sorted(ids) != sorted(links):
+        problems.append(f"кампании в объяснении {sorted(ids)} ≠ план {sorted(links)} (пропуск, лишняя или повтор)")
+    for c in answer["campaigns"]:
+        cid = c["id"]
+        if cid not in links:
+            continue
+        allowed = {cid, "M"} | set(links[cid]["pilots"]) | set(links)
+        used = set(c["fact_ids"]) | _mentioned_ids(c["explanation"])
+        foreign = sorted(i for i in used if i not in allowed)
+        if foreign:
+            problems.append(f"{cid}: ссылки на чужие пилоты/факты {foreign} (свои пилоты: {links[cid]['pilots'] or 'нет'})")
+        tariffs = set(TARIFF_MENTION.findall(c["explanation"])) - links[cid]["tariffs"]
+        if tariffs:
+            problems.append(f"{cid}: упомянуты тарифы не этой кампании {sorted(tariffs)}")
+    for item in answer["warnings"] + answer["next_steps"]:
+        problems += [f"неизвестный id {i}" for i in item["fact_ids"] if i not in facts]
     return problems
 
 
-def explain_with_llm(facts, code_warnings):
+# Официальные цены OpenAI, стандартный тариф, короткий контекст (USD за 1 млн токенов: вход, выход).
+PRICES_USD_PER_1M = {"gpt-5.6-luna": (0.20, 1.20), "gpt-5.6-terra": (2.00, 12.00), "gpt-6-astra": (10.00, 50.00)}
+PRICES_SOURCE = "https://developers.openai.com/api/docs/pricing — Standard, short context, 23.09.2026"
+
+
+def prices(model):
+    """(вход, выход) USD за 1 млн токенов и источник. Окружение важнее встроенной таблицы."""
+    p_in, p_out = setting("AGENT_LLM_PRICE_INPUT_PER_1M", None, float), setting("AGENT_LLM_PRICE_OUTPUT_PER_1M", None, float)
+    if p_in is not None and p_out is not None:
+        return (p_in, p_out), "из окружения"
+    if model in PRICES_USD_PER_1M:
+        return PRICES_USD_PER_1M[model], PRICES_SOURCE
+    return None, "цены модели неизвестны"
+
+
+def _make_client(key, timeout):
+    from openai import OpenAI
+    return OpenAI(api_key=key, timeout=timeout, max_retries=0)
+
+
+def explain_with_llm(facts, code_warnings, links):
+    """
+    Один вызов модели с жёсткими правилами расходов и ключей:
+    - AGENT_LLM=1 — иначе модель не вызывается;
+    - бюджет AGENT_LLM_RUN_BUDGET_USD проверяется ДО каждой попытки по худшему случаю
+      (оценка входа с запасом + максимум выхода); при заданном бюджете без цен вызова нет;
+    - каждая оплаченная попытка учитывается: по факту токенов, а при таймауте/обрыве — верхней оценкой;
+    - следующий ключ — только при 401/403/исчерпанной квоте; при 429 — ожидание на том же ключе,
+      сеть/таймаут — повтор на том же ключе; попытки кончились → шаблон, ключ не меняется.
+    """
     model = setting("OPENAI_MODEL_FAST", "gpt-5.6-luna")
-    keys = [(n, os.environ[n]) for n in KEY_NAMES if os.environ.get(n)]
     meta = {"model": model, "attempts": 0, "key_slot": None, "input_tokens": 0, "output_tokens": 0,
-            "reasoning_tokens": 0, "latency_s": 0.0}
+            "reasoning_tokens": 0, "latency_s": 0.0, "cost_usd": 0.0, "cost_upper_bound_usd": 0.0,
+            "budget_usd": setting("AGENT_LLM_RUN_BUDGET_USD", None, float), "prices_source": None}
+    if setting("AGENT_LLM", "0") != "1":
+        return None, meta, "AGENT_LLM не равен 1 — модель выключена настройкой"
+    keys = [os.environ[n] for n in KEY_NAMES if os.environ.get(n)]
     if not keys:
         return None, meta, "нет ключа OPENAI_API_KEY"
-    from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+    try:
+        from openai import APIConnectionError, APIStatusError, APITimeoutError
+    except ImportError:
+        return None, meta, "пакет openai не установлен (pip install -r requirements-workflow.txt)"
+    price, meta["prices_source"] = prices(model)
+    budget = meta["budget_usd"]
+    if budget is not None and price is None:
+        return None, meta, f"задан бюджет {budget} USD, но цены модели {model} неизвестны — вызов не выполнен"
 
     payload = json.dumps({"facts": {k: v["fields"] for k, v in facts.items()},
+                          "campaign_pilots": {c: l["pilots"] for c, l in links.items()},
                           "code_warnings": code_warnings}, ensure_ascii=False, default=str)
+    max_output = setting("AGENT_LLM_MAX_OUTPUT_TOKENS", 2000, int)
+    input_estimate = math.ceil(len(INSTRUCTIONS + payload) / 2)          # с запасом: ~2 символа на токен
+    worst = (input_estimate * price[0] + max_output * price[1]) / 1e6 if price else 0.0
     timeout = setting("AGENT_LLM_TIMEOUT_SECONDS", 30.0, float)
     max_attempts = setting("AGENT_LLM_MAX_ATTEMPTS", 2, int)
     last_error = "неизвестная ошибка"
-    for slot, (name, key) in enumerate(keys, 1):
-        client = OpenAI(api_key=key, timeout=timeout, max_retries=0)
+    for slot, key in enumerate(keys, 1):
+        try:
+            client = _make_client(key, timeout)
+        except ImportError:
+            return None, meta, "пакет openai не установлен (pip install -r requirements-workflow.txt)"
         for attempt in range(max_attempts):
+            if budget is not None and meta["cost_upper_bound_usd"] + worst > budget:
+                return None, meta, (f"бюджет запуска {budget} USD: следующая попытка (до {worst:.4f} USD) "
+                                    f"могла бы его превысить")
             meta["attempts"] += 1
             started = time.monotonic()
             try:
                 response = client.responses.create(
                     model=model, instructions=INSTRUCTIONS, input=payload,
                     reasoning={"effort": setting("AGENT_LLM_REASONING_EFFORT", "low")},
-                    max_output_tokens=setting("AGENT_LLM_MAX_OUTPUT_TOKENS", 2000, int),
+                    max_output_tokens=max_output,
                     text={"format": {"type": "json_schema", "name": "plan_explanation",
                                      "schema": SCHEMA, "strict": True}})
             except (APITimeoutError, APIConnectionError) as exc:
                 meta["latency_s"] += time.monotonic() - started
+                meta["cost_upper_bound_usd"] += worst                     # ответ мог быть оплачен
                 last_error = f"сеть/таймаут: {type(exc).__name__}"
                 continue
             except APIStatusError as exc:
@@ -256,35 +348,29 @@ def explain_with_llm(facts, code_warnings):
                 code = getattr(exc, "code", None) or ""
                 last_error = f"API {exc.status_code} {code}".strip()
                 if exc.status_code in (401, 403) or code == "insufficient_quota":
-                    break                                   # этот ключ не годится — следующий
+                    break                                               # этот ключ не годится — следующий
                 if exc.status_code == 429:
-                    time.sleep(2 * (attempt + 1))           # лимит частоты: ждём, ключ не меняем
+                    time.sleep(min(2.0 * (attempt + 1), 8.0))           # лимит частоты: ждём на том же ключе
                     continue
-                return None, meta, last_error               # 400/404 и т.п.: повтор не поможет
+                return None, meta, last_error                            # 400/404 и т.п.: повтор не поможет
             meta["latency_s"] += time.monotonic() - started
             meta["key_slot"] = slot
             usage = response.usage
-            meta["input_tokens"] = usage.input_tokens
-            meta["output_tokens"] = usage.output_tokens
+            meta["input_tokens"] += usage.input_tokens
+            meta["output_tokens"] += usage.output_tokens
             details = getattr(usage, "output_tokens_details", None)
-            meta["reasoning_tokens"] = getattr(details, "reasoning_tokens", 0) or 0
+            meta["reasoning_tokens"] += getattr(details, "reasoning_tokens", 0) or 0
+            if price:
+                spent = (usage.input_tokens * price[0] + usage.output_tokens * price[1]) / 1e6
+                meta["cost_usd"] += spent
+                meta["cost_upper_bound_usd"] += spent
             try:
-                answer = json.loads(response.output_text)
+                return json.loads(response.output_text), meta, None
             except (json.JSONDecodeError, TypeError) as exc:
                 return None, meta, f"ответ не JSON: {exc}"
-            return answer, meta, None
+        else:
+            return None, meta, last_error                                # попытки на ключе кончились → шаблон
     return None, meta, last_error
-
-
-def cost_estimate(meta):
-    """Оценка стоимости по ценам из окружения (у.е. — доллары за 1 млн токенов). Без цен — None."""
-    p_in, p_out = setting("AGENT_LLM_PRICE_INPUT_PER_1M", None, float), setting("AGENT_LLM_PRICE_OUTPUT_PER_1M", None, float)
-    if p_in is None or p_out is None:
-        return None, "цены модели не заданы (AGENT_LLM_PRICE_INPUT_PER_1M / _OUTPUT_PER_1M)"
-    usd = (meta["input_tokens"] * p_in + meta["output_tokens"] * p_out) / 1e6
-    budget = setting("AGENT_LLM_RUN_BUDGET_USD", None, float)
-    note = None if budget is None or usd <= budget else f"превышен бюджет запуска {budget} USD"
-    return round(usd, 6), note
 
 
 def template_explanation(facts, code_warnings):
@@ -307,19 +393,18 @@ def run_workflow(seed=42, use_llm=True, out=ROOT / "outputs"):
     run = run_agent(seed)
     run["submission"].to_csv(out / "submission.csv", index=False)   # ровно как make_submission.py
     csv_bytes = (out / "submission.csv").read_bytes()
-    facts, code_warnings = build_facts(run)
+    facts, code_warnings, links = build_facts(run)
 
-    answer, meta, reason = (None, {"model": None}, "объяснение выключено (--no-llm)")
+    answer, meta, reason = (None, {"model": None, "attempts": 0}, "объяснение выключено (--no-llm)")
     if use_llm:
-        answer, meta, reason = explain_with_llm(facts, code_warnings)
+        answer, meta, reason = explain_with_llm(facts, code_warnings, links)
         if answer is not None:
-            problems = validate(answer, facts)
+            problems = validate(answer, facts, links)
             if problems:
                 answer, reason = None, "ответ модели отклонён: " + "; ".join(problems[:3])
     source = "llm" if answer is not None else "template"
     if answer is None:
         answer = template_explanation(facts, code_warnings)
-    cost, cost_note = cost_estimate(meta) if source == "llm" else (None, None)
 
     rendered = {"summary": render(answer["summary"], facts),
                 "campaigns": [dict(c, explanation=render(c["explanation"], facts)) for c in answer["campaigns"]],
@@ -336,8 +421,8 @@ def run_workflow(seed=42, use_llm=True, out=ROOT / "outputs"):
         "facts": facts,
         "explanation": {"source": source, "fallback_reason": reason if source == "template" else None,
                         "raw": answer, "rendered": rendered},
-        "llm_usage": {k: meta.get(k) for k in ("model", "attempts", "key_slot", "input_tokens", "output_tokens",
-                                               "reasoning_tokens", "latency_s")} | {"cost_usd": cost, "cost_note": cost_note},
+        "campaign_pilot_links": {c: l["pilots"] for c, l in links.items()},
+        "llm_usage": meta,       # расход учтён всегда — и когда ответ отклонён и показан шаблон
         "trace": run["trace"],
     }
     (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
@@ -362,10 +447,11 @@ def main():
     print(f"план: {report['metrics']['campaigns']} кампаний, net (мок) {report['metrics']['net']:,.0f}")
     print(f"объяснение: {report['explanation']['source']}"
           + (f" ({report['explanation']['fallback_reason']})" if report['explanation']['fallback_reason'] else ""))
-    if report["explanation"]["source"] == "llm":
-        print(f"модель {u['model']}, токены in/out {u['input_tokens']}/{u['output_tokens']} "
-              f"(reasoning {u['reasoning_tokens']}), задержка {u['latency_s']:.1f} с, ключ №{u['key_slot']}, "
-              f"стоимость {u['cost_usd'] if u['cost_usd'] is not None else 'н/д'} {u['cost_note'] or ''}")
+    if u.get("attempts"):
+        print(f"модель {u['model']}: попыток {u['attempts']}, ключ №{u['key_slot']}, токены in/out "
+              f"{u['input_tokens']}/{u['output_tokens']} (reasoning {u['reasoning_tokens']}), задержка "
+              f"{u['latency_s']:.1f} с, стоимость {u['cost_usd']:.5f} USD (верхняя оценка "
+              f"{u['cost_upper_bound_usd']:.5f}, бюджет {u['budget_usd']})")
     print(f"файлы: {args.out}/submission.csv, report.json, explanation.md")
 
 
