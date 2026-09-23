@@ -19,6 +19,9 @@ Backend ничего не считает сам: запускает агента
   data/change_tariff.csv, data/dict_tariff.csv` + `manifest.json` (sha256 каждого файла).
 - `CURRENT`/`OUTDATED`: сравнивать `manifest.json["agent.py"]` с ожидаемым sha выше (константа в backend или
   переменная `EXPECTED_AGENT_SHA256`). Папки `beeline_agent/` на Heroku не будет — сравнивать не с ней.
+- Переводы строк: sha выше — для файла с LF (как в git). При `core.autocrlf=true` на Windows файл на диске с CRLF,
+  его sha `d19efe79…` — пакет соберётся с ним и будет `OUTDATED`. Перед сборкой: `git config core.autocrlf false`
+  и `git checkout -- beeline_agent/agent.py`, либо принимать оба значения.
 - Запуск — отдельный процесс (`app.services.agent_worker`), seed по умолчанию 42, общий лимит 600 с
   (агент сам укладывается в ~1 с, свой таймер 180 с).
 
