@@ -31,7 +31,7 @@ npm run dev
 Frontend: http://localhost:5173. Vite завершится с ошибкой, если порт занят, вместо переключения на другой порт.
 Для Linux/macOS копировать .env.example через `cp -n .env.example .env`.
 
-В frontend/.env:
+В .env.example указан production backend для проверки актуального API. Чтобы работать с локальным backend, заменить VITE_API_URL в frontend/.env:
 
 ```dotenv
 VITE_API_URL=http://localhost:8000

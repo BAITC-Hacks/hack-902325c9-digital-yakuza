@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, ApiError, errorMessage } from '../api/client';
 import type { AgentRun, DashboardStatus, Pilot } from '../types/api';
+import { explanationReport } from '../utils/explanation';
 
 export function useAgentRun() {
   const [run, setRun] = useState<AgentRun | null>(null);
@@ -12,12 +13,14 @@ export function useAgentRun() {
   const [error, setError] = useState('');
   const [pilotError, setPilotError] = useState('');
   const [startError, setStartError] = useState('');
+  const [explanationPending, setExplanationPending] = useState(false);
   const startLock = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
     let timer: number | undefined;
     let selectedId = activeId;
+    let explanationWaitStarted = 0;
     setLoading(true);
 
     async function poll() {
@@ -29,6 +32,12 @@ export function useAgentRun() {
         setRun(next);
         setError('');
         repeat = next.status === 'running';
+        const report = explanationReport(next);
+        const awaitingExplanation = next.status === 'completed' && !report?.rendered && report?.source !== 'unavailable';
+        if (awaitingExplanation && !explanationWaitStarted) explanationWaitStarted = Date.now();
+        const waitForExplanation = awaitingExplanation && Date.now() - explanationWaitStarted < 90000;
+        setExplanationPending(waitForExplanation);
+        repeat = repeat || waitForExplanation;
         try {
           const response = await api.pilots(next.run_id, controller.signal);
           if (controller.signal.aborted) return;
@@ -41,6 +50,7 @@ export function useAgentRun() {
         if (controller.signal.aborted) return;
         if (reason instanceof ApiError && reason.status === 404 && !selectedId) {
           setRun(null);
+          setExplanationPending(false);
           setPilots([]);
           setError('');
           setPilotError('');
@@ -70,6 +80,7 @@ export function useAgentRun() {
     try {
       const next = await api.start(seed);
       setRun(next);
+      setExplanationPending(false);
       setPilots([]);
       setPilotError('');
       setError('');
@@ -92,7 +103,7 @@ export function useAgentRun() {
     : run?.status ?? (error ? 'error' : 'idle');
 
   return {
-    run, pilots, loading, starting, status, error, pilotError, startError, start,
+    run, pilots, loading, starting, status, error, pilotError, startError, start, explanationPending,
     refresh: () => { setStartError(''); setRevision((value) => value + 1); },
   };
 }

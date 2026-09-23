@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, errorMessage } from '../api/client';
 import { Campaigns } from '../components/Campaigns';
+import { Explanation } from '../components/Explanation';
 import { CaseOverview } from '../components/CaseOverview';
 import { Pilots } from '../components/Pilots';
 import { Notice, Status } from '../components/Ui';
@@ -55,6 +56,7 @@ export function Dashboard() {
         <a href="#overview"><span>01</span> Обзор аудитории</a>
         <a href="#run"><span>02</span> Запуск анализа</a>
         <a href="#results"><span>03</span> Кампании</a>
+        <a href="#explanation">Почему такой план</a>
         <a href="#pilots"><span>04</span> Пробные запуски</a>
         <a href="#submission"><span>05</span> Выгрузка</a>
       </nav>
@@ -65,7 +67,7 @@ export function Dashboard() {
       <div className="content">
         <div className="page-heading"><div><h1>Аналитика кампаний</h1>
           <p>Аудитория, пробные запуски и результаты кампаний.</p></div>
-          <a className="button secondary" href="#run">К запуску агента ↗</a>
+          <a className="button secondary" href="#run">К запуску агента ↓</a>
         </div>
         <p className="simulation-note">Результаты моделирования <Help label="Результаты моделирования">Эффект кампаний оценивается в тестовой среде. Это не фактический доход и не итоговая оценка жюри.</Help></p>
 
@@ -107,10 +109,12 @@ export function Dashboard() {
           <Campaigns run={agent.run} />
         </section>
 
+        <Explanation run={agent.run} pending={agent.explanationPending} />
+
         <section id="pilots" aria-labelledby="pilots-title">
           <div className="section-heading"><div><span className="section-number">04</span><h2 id="pilots-title">Пробные запуски</h2><Help label="Пробные запуски">Агент проверяет предложение на небольшой группе клиентов, прежде чем включить его в итоговую стратегию.</Help><span className="count">{agent.pilots.length}</span></div></div>
           {agent.pilotError && <Notice error retry={agent.refresh}>{agent.pilotError}</Notice>}
-          <Pilots pilots={agent.pilots} loading={busy || agent.loading} />
+          <Pilots pilots={agent.pilots} loading={busy || agent.loading} links={agent.run?.explanation?.campaign_pilot_links} />
         </section>
 
         <section id="submission" aria-labelledby="submission-title">

@@ -50,6 +50,10 @@ export interface Campaign {
 }
 
 export interface Pilot {
+  pilot?: string;
+  candidate_id?: string | null;
+  mu?: number | null;
+  lcb?: number | null;
   sequence: number;
   hypothesis: string;
   segment: Record<string, unknown>;
@@ -61,6 +65,11 @@ export interface Pilot {
 }
 
 export interface AgentRun {
+  agent_sha256?: string | null;
+  stop_reason?: string | null;
+  estimate_source?: string | null;
+  risk_info?: Record<string, unknown> | null;
+  explanation?: ExplanationEnvelope | null;
   run_id: string;
   status: RunStatus;
   seed: number;
@@ -76,4 +85,28 @@ export interface PilotsResponse {
   run_id: string;
   status: RunStatus;
   pilots: Pilot[];
+}
+
+export interface ExplanationText {
+  text: string;
+  severity?: string;
+  fact_ids?: string[];
+}
+
+export interface RenderedExplanation {
+  summary?: string;
+  campaigns?: { id: string; explanation: string; fact_ids?: string[] }[];
+  warnings?: (ExplanationText | string)[];
+  next_steps?: (ExplanationText | string)[];
+}
+
+export interface ExplanationReport {
+  source?: string;
+  rendered?: RenderedExplanation | null;
+}
+
+export interface ExplanationEnvelope extends ExplanationReport {
+  explanation?: ExplanationReport | null;
+  campaign_pilot_links?: Record<string, string[]>;
+  facts?: Record<string, { kind: string; fields: Record<string, unknown> }>;
 }
