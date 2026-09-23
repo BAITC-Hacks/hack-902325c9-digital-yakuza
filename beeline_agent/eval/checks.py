@@ -12,6 +12,7 @@
   R2  время работы далеко от лимита 10 минут
   R3  запасной путь: агент не падает, если пилоты или план ломаются
   R4  без OPENAI_API_KEY всё работает
+  R5  submission.csv в репо совпадает с тем, что сейчас выдаёт агент (сверка организаторов)
 """
 
 import ast
@@ -165,6 +166,18 @@ def r4_no_key():
     report("R4", res["error"] is None and len(res["plan"]) > 0, "без OPENAI_API_KEY агент работает и выдаёт план")
 
 
+def r5_submission_fresh():
+    import io
+    import make_submission
+    fresh = make_submission.build_submission(Agent(verbose=False))
+    buf = io.StringIO()
+    fresh.to_csv(buf, index=False)
+    committed = (ROOT / "submission.csv").read_text(encoding="utf-8")
+    ok = buf.getvalue().splitlines() == committed.splitlines()
+    report("R5", ok, "submission.csv совпадает с текущим агентом" if ok
+           else "submission.csv устарел: запусти python make_submission.py и закоммить")
+
+
 def main():
     worlds = [make_world(0, "mock")] + [make_world(s, sc) for s in range(3)
                                          for sc in ("random", "flip", "shift", "stingy")]
@@ -176,6 +189,7 @@ def main():
     r2_time()
     r3_fallback()
     r4_no_key()
+    r5_submission_fresh()
     failed = [r for r in results if r[1] == "FAIL"]
     print(f"\nитог: {len(results) - len(failed)} из {len(results)} без ошибок" + (" — ЕСТЬ ПРОВАЛЫ" if failed else ""))
     sys.exit(1 if failed else 0)
