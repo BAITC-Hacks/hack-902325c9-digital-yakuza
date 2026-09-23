@@ -7,21 +7,12 @@ Backend ничего не считает сам: запускает агента
 метрики — из `scoring_core.score_campaigns` организаторов.
 
 ## 0. Сначала
-1. Влить `origin/Agent` в свою ветку. Там уже есть: объяснение после плана (`services/agent_runs.py::explain_run`),
-   миграция `0003` (`agent_runs.explanation`), поле `explanation` в `RunResponse`, фикс распаковки на Windows,
-   `workflow.py` в пакете. Конфликт в `vendor/beeline_agent.zip` не сливать — после слияния пересобрать:
-   `python backend/scripts/package_beeline.py`.
-2. Своя миграция тоже `0003`? Перенумеровать в `0004` с `down_revision = "0003"` — иначе у Alembic две головы.
+Влить `origin/Agent` в `main` (конфликтов нет, меняется только `beeline_agent/`). Backend импортирует агента прямо
+из `beeline_agent/` (коммит `a731154`) — пересобирать пакет не нужно, новая версия подхватится после перезапуска.
 
-## 1. Пакет агента
-- Файлы: `agent.py, environment.py, mock_environment.py, scoring_core.py, local_eval.py, make_submission.py,
-  requirements.txt, workflow.py, customer_profile.csv, tariff_dictionary.csv, feature_dictionary.csv,
-  data/change_tariff.csv, data/dict_tariff.csv` + `manifest.json` (sha256 каждого файла).
-- `CURRENT`/`OUTDATED`: сравнивать `manifest.json["agent.py"]` с ожидаемым sha выше (константа в backend или
-  переменная `EXPECTED_AGENT_SHA256`). Папки `beeline_agent/` на Heroku не будет — сравнивать не с ней.
-- Переводы строк: sha выше — для файла с LF (как в git). При `core.autocrlf=true` на Windows файл на диске с CRLF,
-  его sha `d19efe79…` — пакет соберётся с ним и будет `OUTDATED`. Перед сборкой: `git config core.autocrlf false`
-  и `git checkout -- beeline_agent/agent.py`, либо принимать оба значения.
+## 1. Версия агента
+- `agent_sha256()` считает sha файла на диске. На Heroku (Linux, файлы из git с LF) это `59547e1d…` → `CURRENT`.
+  Локально на Windows при `core.autocrlf=true` файл с CRLF, sha `d19efe79…` — это та же версия, не `OUTDATED`.
 - Запуск — отдельный процесс (`app.services.agent_worker`), seed по умолчанию 42, общий лимит 600 с
   (агент сам укладывается в ~1 с, свой таймер 180 с).
 
@@ -96,7 +87,7 @@ capped_*`). **`n_campaigns` включает пилоты** — число ка�
 - 5 кампаний (каналы: sms, digital_ads, sms, sms, digital_ads), 20 пилотов, `total_cost = 95 094`,
   `total_contacts = 13 320`, самая большая кампания 4 108, `net_arpu_gain = 5 165 453`, `status = PASS`.
 - CSV совпадает с `beeline_agent/submission.csv` (переводы строк не в счёт).
-- `manifest.json["agent.py"] = 59547e1d…` → `CURRENT`.
+- `agent_sha256 = 59547e1d…` (на Heroku) → `CURRENT`.
 - `explanation.campaign_pilot_links`: C1→P5,P6; C2→P13,P14; C3→P15,P16; C4→P7,P8; C5→P9,P10.
 - Сломать объяснение (например, неверный ключ) → план и CSV на месте, `explanation.source = "template"`.
 - Ключей API нет ни в базе, ни в логах, ни в ответах.
