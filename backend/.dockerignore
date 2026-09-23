@@ -1,0 +1,10 @@
+.env
+.env.*
+.git
+__pycache__
+*.pyc
+.venv
+.idea
+.vscode
+postgres_data
+docs
