@@ -2,6 +2,7 @@
 Варианты агента для экспериментов «одно изменение за раз».
 
   agent_v0        — замороженный v0 (eval/baselines/agent_v0.py): старые единицы, q как в v0
+  agent_pre2      — замороженная версия до шага 2 (eval/baselines/agent_pre_step2.py): смеси тарифов
   agent_units     — шаг 3а: код с новыми единицами, q ровно как в v0, q_se по договорённой формуле
   agent           — текущий agent.py как есть (q из таблицы Тимура в режиме PRIOR_MODE)
   agent_hier      — шаг 3б: код с новыми единицами, q иерархический (PRIOR_SCORE: уровень + контраст)
@@ -23,8 +24,9 @@ FORMAT = ("q", "q_se", "n_obs")
 CONV_ALPHA = 10.0            # как в prior/build_prior.py
 
 
-def _load_frozen_v0():
-    spec = importlib.util.spec_from_file_location("agent_v0", BASE / "agent_v0.py")
+def _load_frozen(name):
+    """Замороженная версия агента из eval/baselines/<name>.py (отдельный модуль, свои таблицы)."""
+    spec = importlib.util.spec_from_file_location(name, BASE / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.Agent
@@ -64,12 +66,32 @@ def with_table(table):
     return lambda: TableAgent(verbose=False)
 
 
+def with_params(**overrides):
+    """Фабрика агента, который на время act() видит другие значения параметров agent.py (для настройки)."""
+    class ParamAgent(agent_module.Agent):
+        def act(self, env):
+            saved = {name: getattr(agent_module, name) for name in overrides}
+            for name, value in overrides.items():
+                setattr(agent_module, name, value)
+            try:
+                return super().act(env)
+            finally:
+                for name, value in saved.items():
+                    setattr(agent_module, name, value)
+    return lambda: ParamAgent(verbose=False)
+
+
 def build_variants():
-    v0 = _load_frozen_v0()
+    v0, pre2, naive2 = _load_frozen("agent_v0"), _load_frozen("agent_pre_step2"), _load_frozen("agent_step2_naive")
+    naive2_ambig, joint2 = _load_frozen("agent_step2_naive_ambig"), _load_frozen("agent_step2_joint")
     return {
         "agent_v0": lambda: v0(verbose=False),
+        "agent_pre2": lambda: pre2(verbose=False),     # шаг 3 + резерв + запасной план (до шага 2)
+        "agent_step2_naive": lambda: naive2(verbose=False),   # шаг 2а: пилот на каждую ячейку отдельно
+        "agent_step2_naive_ambig": lambda: naive2_ambig(verbose=False),  # 2а + повтор только при неясном решении
         "agent_units": with_table(units_only_table()),
         "agent_hier": with_table(hier_table()),
+        "agent_step2_joint": lambda: joint2(verbose=False),   # шаг 2б: совместная модель ячеек (не принята)
     }
 
 
