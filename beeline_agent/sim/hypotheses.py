@@ -18,7 +18,8 @@
 
 Параметры — константы верхнего уровня agent.py (файл не меняется, значения подставляются в памяти):
 RISK_K, TRANSFER_SD, PRIOR_SHRINK, MAX_PILOTS_PER_CANDIDATE, PILOT_CHANNEL, PILOT_N_LARGE, PILOT_N_SMALL,
-SMALL_SEGMENT и т. д.; плюс PRIOR_SET=hist|hist+unseen (подмешать PRIOR_UNSEEN в кандидаты).
+SMALL_SEGMENT и т. д.; плюс PRIOR_SET=hist|hist+unseen (подмешать PRIOR_UNSEEN в кандидаты) и
+REQUIRE_PILOT=1|0 (1 — в план идёт только проверенное пилотом, как сейчас; 0 — и уверенное без пилота).
 Основной прогонщик — eval.run; этот скрипт — для сеток и сочетаний гипотез.
 """
 from __future__ import annotations
@@ -65,6 +66,9 @@ def _apply(agent_mod, params: dict) -> None:
                 prior = {**getattr(agent_mod, "PRIOR_UNSEEN", {}), **prior}
             agent_mod.PRIOR = prior
             continue
+        if k == "REQUIRE_PILOT":                # 1 — в план только проверенное пилотом (как сейчас), 0 — и без пилота
+            agent_mod.Agent._build_plan.__defaults__ = (bool(v),)
+            continue
         if not hasattr(agent_mod, k):
             raise ValueError(f"в agent.py нет константы {k}")
         setattr(agent_mod, k, v)
@@ -84,8 +88,9 @@ def _one_run(task: tuple) -> dict:
     from eval.core import run_strategy
 
     params, scenario, seed = task
-    saved = {k: getattr(agent_mod, k) for k in params if k != "PRIOR_SET"}
+    saved = {k: getattr(agent_mod, k) for k in params if k not in ("PRIOR_SET", "REQUIRE_PILOT")}
     saved_lcb, saved_prior = agent_mod.Candidate.lcb.__defaults__, agent_mod.PRIOR
+    saved_plan = agent_mod.Agent._build_plan.__defaults__
     try:
         _apply(agent_mod, params)
         world = make_world(seed, scenario)
@@ -94,6 +99,7 @@ def _one_run(task: tuple) -> dict:
         for k, v in saved.items():
             setattr(agent_mod, k, v)
         agent_mod.Candidate.lcb.__defaults__, agent_mod.PRIOR = saved_lcb, saved_prior
+        agent_mod.Agent._build_plan.__defaults__ = saved_plan
     final = res.get("campaigns_detail", [])[res["n_pilots"]:]
     violations = res.get("violations", [])
     return {**params, "scenario": scenario, "seed": seed, "world": world.name, "net": res["net_arpu_gain"],
