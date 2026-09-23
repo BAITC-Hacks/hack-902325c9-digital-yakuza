@@ -3,7 +3,9 @@
 
     python prior/evaluate_estimators.py [--splits 50]
 
-Split-half: историю много раз делим пополам по абонентам. По половине A считаем оценку
+Split-half: историю много раз делим пополам по абонентам. Сравниваются: среднее, медиана,
+усечённые средние, винзоризация, сжатие к ценовой регрессии (eb_mean) и иерархия
+«уровень страты + контраст цели» (hier, prior/hier.py). По половине A считаем оценку
 каждой связки (тариф_откуда, сегмент, тариф_куда), по половине B — то, что считает среда
 (среднее клипнутого Δ%), и смотрим ошибку. Отдельно по связкам с 1–5, 6–20 и 21+ наблюдениями.
 Для q = Δ% × доля перехода сравниваем сырую долю и сглаженную.
@@ -18,9 +20,11 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import hier  # noqa: E402
 from history import KEYS, ROOT, eb_shrink, load_history, pooled_sigma2, trimmed_mean  # noqa: E402
 
 BUCKETS = [(1, 5, "1-5"), (6, 20, "6-20"), (21, 10 ** 9, "21+")]
+TARIFFS = None
 CONV_ALPHA = 10.0
 
 
@@ -37,6 +41,10 @@ def cell_estimates(a: pd.DataFrame, price, median_price) -> pd.DataFrame:
     cells = cells.merge(eb[KEYS + ["shrunk"]].rename(columns={"shrunk": "eb_mean"}), on=KEYS)
     eb2, _ = eb_shrink(cells.assign(est=cells["trim10"]), s2, price, median_price)
     cells = cells.merge(eb2[KEYS + ["shrunk"]].rename(columns={"shrunk": "eb_trim10"}), on=KEYS)
+    # иерархия: уровень страты + контраст цели (prior/hier.py)
+    model = hier.fit(a, TARIFFS)
+    cells["hier"] = [hier.predict(model, f, s, t)["pct"]
+                     for f, s, t in zip(cells["tariff_from"], cells["arpu_segment"], cells["tariff_to"])]
     # доля переходов: сырая и сглаженная к структуре переходов сегмента
     tot = a.groupby(["tariff_from", "arpu_segment"]).size().rename("N").reset_index()
     cells = cells.merge(tot, on=["tariff_from", "arpu_segment"])
@@ -52,10 +60,12 @@ def main():
     parser.add_argument("--splits", type=int, default=50)
     args = parser.parse_args()
 
+    global TARIFFS
     hist, _ = load_history()
-    price = pd.read_csv(ROOT / "data" / "dict_tariff.csv").set_index("tariff_plan_code")["price_tariff"]
+    TARIFFS = pd.read_csv(ROOT / "data" / "dict_tariff.csv")
+    price = TARIFFS.set_index("tariff_plan_code")["price_tariff"]
     median_price = float(price.median())
-    estimators = ["mean", "median", "trim10", "trim20", "winsor", "eb_mean", "eb_trim10"]
+    estimators = ["mean", "median", "trim10", "trim20", "winsor", "eb_mean", "eb_trim10", "hier"]
 
     rng = np.random.default_rng(7)
     ids = hist["ID_NUMBER"].unique()

@@ -1,0 +1,55 @@
+{
+  "cleaning": {
+    "rows_in_file": 14823,
+    "removed_full_duplicates": 6,
+    "prev_negative": 1,
+    "prev_zero": 1406,
+    "prev_0_100": 711,
+    "next_zero_kept": 962,
+    "removed_prev_below_100": 2118,
+    "pct_clipped_at_+300%": 843,
+    "pct_equal_-100%_kept": 1064,
+    "prev_above_p999_kept": 15,
+    "rows_used": 12699
+  },
+  "level": {
+    "HIGH": {
+      "mean": -0.1285252642330312,
+      "tau": 0.046000911980900706,
+      "sigma": 0.48249113553767575
+    },
+    "LOW": {
+      "mean": 1.0208221573461704,
+      "tau": 0.3838604553047912,
+      "sigma": 1.694234652491091
+    },
+    "MID": {
+      "mean": 0.2572570949782832,
+      "tau": 0.17344079672772733,
+      "sigma": 0.9567964810119635
+    }
+  },
+  "tau_contrast": {
+    "target": 0.1841946048491164,
+    "seg_target": 0.13140131149817783,
+    "cell": 0.13813315203175636
+  },
+  "transfer": {
+    "kernel_loo_rmse": 0.25268813542306456,
+    "zero_rmse": 0.23613588067361005,
+    "method": "zero"
+  },
+  "target_contrast": {
+    "tariff_1": -0.6125,
+    "tariff_10": 0.0728,
+    "tariff_11": 0.0849,
+    "tariff_12": 0.0144,
+    "tariff_13": -0.1395,
+    "tariff_21": -0.1837,
+    "tariff_4": -0.0332,
+    "tariff_8": 0.0883,
+    "tariff_9": 0.2276
+  },
+  "conv_fallback": 0.09221311475409837,
+  "budget_value": 10.0
+}
