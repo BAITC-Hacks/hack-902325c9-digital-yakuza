@@ -1,0 +1,157 @@
+{
+  "customer_profile": {
+    "rows": 23441,
+    "unique_ids": 23441,
+    "baseline_predicted_arpu_sum": 150641084.24626842,
+    "no_current_tariff": 95,
+    "no_arpu_and_arpu_segment": 5,
+    "no_traffic_and_data_segment": 110,
+    "zero_predicted_arpu": 103,
+    "predicted_arpu_p999": 25574.734778979466,
+    "predicted_arpu_max": 216619.82,
+    "predicted_arpu_max_id": 14718,
+    "lte_greater_than_total_data": 13337,
+    "segment_rules_check": {
+      "arpu_segment_mismatch": 0,
+      "data_segment_mismatch": 0,
+      "call_segment_mismatch": 0
+    },
+    "segment_rules": {
+      "arpu_segment": "ARPU_3m_avg: <=1000 LOW, <=5000 MID, >5000 HIGH",
+      "data_segment": "DATA_VOLUME: 0 NON_USER, <=2000 LITE, >2000 HEAVY (LTE_DATA_VOLUME не участвует)",
+      "call_segment": "OUT_LOC_ONNET_MIN + OUT_LOC_OFFNET_MIN: <100 LOW, <=400 MEDIUM, >400 HIGH; пропуск -> LOW"
+    },
+    "segments": {
+      "arpu_segment": {
+        "HIGH": 13918,
+        "MID": 6780,
+        "LOW": 2738,
+        "NA": 5
+      },
+      "data_segment": {
+        "HEAVY": 11735,
+        "LITE": 10253,
+        "NON_USER": 1343,
+        "NA": 110
+      },
+      "call_segment": {
+        "LOW": 10716,
+        "MEDIUM": 8309,
+        "HIGH": 4416
+      },
+      "ARPU_trend": {
+        "GROWING": 15127,
+        "DECLINING": 4933,
+        "STABLE": 3376,
+        "NA": 5
+      }
+    },
+    "n_cells_tariff_x_arpu_segment": 63
+  },
+  "arpu_monthly": {
+    "rows": 78798,
+    "full_duplicates_removed": 84,
+    "conflicting_id_month_groups": 266,
+    "conflicting_rows": 533,
+    "negative_arpu_rows": 4,
+    "zero_arpu_rows": 14669,
+    "months": [
+      "2026-04-01",
+      "2026-05-01",
+      "2026-06-01",
+      "2026-07-01",
+      "2026-08-01",
+      "2026-09-01"
+    ],
+    "rows_after_clean": 78447
+  },
+  "change_tariff": {
+    "rows": 14823,
+    "full_duplicates_removed": 6,
+    "change_months": [
+      "2026-10-01"
+    ],
+    "from_equals_to": 0,
+    "prev_arpu_lt_100_excluded": 2118,
+    "prev_arpu_le_0": 1407,
+    "next_arpu_le_0": 1609,
+    "usable_for_prior": 12699,
+    "pct_clipped_share": 0.06638317977793527,
+    "pct_raw_quantiles": {
+      "0.01": -1.0,
+      "0.05": -1.0,
+      "0.25": -0.46356469299063674,
+      "0.5": -0.001986269073007651,
+      "0.75": 0.5670954098506746,
+      "0.95": 4.1392625011371305,
+      "0.99": 17.58139259468692
+    },
+    "direction_share": {
+      "UPSELL": 0.4433,
+      "DOWNSELL": 0.4317,
+      "FLAT": 0.125
+    },
+    "from_tariffs": 20,
+    "to_tariffs": [
+      "tariff_1",
+      "tariff_4",
+      "tariff_8",
+      "tariff_9",
+      "tariff_10",
+      "tariff_11",
+      "tariff_12",
+      "tariff_13",
+      "tariff_21"
+    ],
+    "prev_matches_arpu_monthly_share": 0.9882567321320105,
+    "from_matches_traffic_tariff_share": 0.9789431058918809,
+    "by_arpu_segment": {
+      "HIGH": {
+        "n": 4421,
+        "mean": -0.1285,
+        "median": -0.1238,
+        "upsell_share": 0.2712,
+        "downsell_share": 0.5202
+      },
+      "LOW": {
+        "n": 1798,
+        "mean": 1.0208,
+        "median": 0.785,
+        "upsell_share": 0.5679,
+        "downsell_share": 0.406
+      },
+      "MID": {
+        "n": 6480,
+        "mean": 0.2573,
+        "median": 0.1481,
+        "upsell_share": 0.5262,
+        "downsell_share": 0.3784
+      }
+    }
+  },
+  "traffic": {
+    "rows": 75736,
+    "months": [
+      "2026-04-01",
+      "2026-05-01",
+      "2026-06-01",
+      "2026-07-01",
+      "2026-08-01",
+      "2026-09-01"
+    ],
+    "missing_tariff_plan_code_rows": 16725,
+    "missing_device_id_rows": 2697,
+    "missing_contact_metrics_rows": 3987,
+    "lte_greater_than_total_rows": 21058,
+    "ids_with_tariff_change_inside_period": 4413,
+    "history_customers_with_pre_period_traffic": 14699
+  },
+  "id_overlap": {
+    "customer_profile&change_tariff": 0,
+    "customer_profile&arpu_monthly": 0,
+    "customer_profile&traffic": 0,
+    "change_tariff&arpu_monthly": 14817,
+    "change_tariff&traffic": 14727,
+    "arpu_monthly&traffic": 14875
+  }
+}
