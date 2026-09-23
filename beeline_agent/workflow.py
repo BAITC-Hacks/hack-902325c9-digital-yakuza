@@ -79,41 +79,52 @@ def run_agent(seed):
     model = _mock_impact_model(pd.read_csv(ROOT / "data" / "change_tariff.csv"))
     score = score_campaigns(strategy, env.customer_profile, model, env.tariffs,
                             float(env.customer_profile["predicted_arpu"].sum()), _mock_fallback, team_id="workflow")
-    return {"campaigns": campaigns, "submission": submission, "score": score, "trace": agent.trace,
-            "pilot_history": env.pilot_history, "n_pilots": len(pilots), "env": env}
+    details = score["campaigns_detail"][len(pilots):]
+    result = {                                           # тот же формат, в котором backend хранит запуск
+        "campaigns": [{**c, **d} for c, d in zip(campaigns, details)],
+        "pilots": list(env.pilot_history),
+        "trace": agent.trace,
+        "metrics": {k: v for k, v in score.items() if k != "campaigns_detail"},
+        "total_budget": env.total_budget,
+    }
+    return {"submission": submission, "result": result}
 
 
 # ---------------------------------------------------------------- 2. факты
-def build_facts(run):
-    score, trace, env = run["score"], run["trace"], run["env"]
-    details = score["campaigns_detail"][run["n_pilots"]:]
-    plan_logs = [e for e in trace if e["kind"] == "plan_add"]
-    pilot_logs = [e for e in trace if e["kind"] == "pilot"]
+def build_facts(result):
+    """
+    Факты из готового результата запуска. Формат result — как у backend:
+      campaigns — кампании плана с полями подсчёта (n_contacts, cost, gross_lift, n_negative);
+      pilots    — результаты env.run_pilot по порядку; trace — журнал агента;
+      metrics   — итоги score_campaigns; total_budget — бюджет среды.
+    """
+    metrics, trace, pilots = result["metrics"], result.get("trace") or [], result.get("pilots") or []
+    campaigns, total_budget = result["campaigns"], result.get("total_budget", 100_000)
+    plan_logs = [e for e in trace if e.get("kind") == "plan_add"]
+    pilot_logs = [e for e in trace if e.get("kind") == "pilot"]
     facts = {}
 
-    pilot_cost = sum(p["cost"] for p in run["pilot_history"])
     facts["M"] = {"kind": "metrics", "fields": {
-        "net": score["net_arpu_gain"], "gross": score["gross_arpu_lift"], "cost": score["total_cost"],
-        "contacts": score["total_contacts"], "unique": score["unique_customers_targeted"],
-        "budget_used_pct": score["budget_used_pct"], "growth_pct": score["growth_vs_baseline_pct"],
-        "pilots": run["n_pilots"], "pilot_cost": pilot_cost,
-        "remaining_budget": env.total_budget - score["total_cost"],   # среда списывает только пилоты
-        "campaigns": len(run["campaigns"])}}
+        "net": metrics["net_arpu_gain"], "gross": metrics["gross_arpu_lift"], "cost": metrics["total_cost"],
+        "contacts": metrics["total_contacts"], "unique": metrics["unique_customers_targeted"],
+        "budget_used_pct": metrics["budget_used_pct"], "growth_pct": metrics["growth_vs_baseline_pct"],
+        "pilots": len(pilots), "pilot_cost": sum(p.get("cost") or 0 for p in pilots),
+        "remaining_budget": total_budget - metrics["total_cost"],   # среда списывает только пилоты
+        "campaigns": len(campaigns)}}
 
-    for i, camp in enumerate(run["campaigns"], 1):
-        detail = details[i - 1] if i - 1 < len(details) else {}
+    for i, camp in enumerate(campaigns, 1):
         log = plan_logs[i - 1] if i - 1 < len(plan_logs) else {}
         tariffs = (camp.get("filter_current_tariff") or "").split(";")
         facts[f"C{i}"] = {"kind": "campaign", "fields": {
             "name": camp.get("campaign_name"), "segment": camp.get("filter_arpu_segment"),
             "target": camp["target_tariff"], "channel": camp["channel"], "tariffs": len(tariffs),
-            "contacts": detail.get("n_contacts"), "cost": detail.get("cost"),
-            "gross_lift": detail.get("gross_lift"), "negative": detail.get("n_negative"),
+            "contacts": camp.get("n_contacts"), "cost": camp.get("cost"),
+            "gross_lift": camp.get("gross_lift"), "negative": camp.get("n_negative"),
             "mu": log.get("mu"), "lcb": log.get("lcb"), "pilots": log.get("pilots")}}
 
     # связи «кампания → её пилоты» формирует код: пилот проверял ровно ту гипотезу, из которой собрана кампания
     links = {}
-    for i, camp in enumerate(run["campaigns"], 1):
+    for i, camp in enumerate(campaigns, 1):
         log = plan_logs[i - 1] if i - 1 < len(plan_logs) else {}    # у запасной кампании записи plan_add нет
         pilots_of = [f"P{j}" for j, p in enumerate(pilot_logs, 1) if log and p["candidate"] == log.get("candidate")]
         links[f"C{i}"] = {"pilots": pilots_of,
@@ -121,7 +132,7 @@ def build_facts(run):
         facts[f"C{i}"]["fields"]["pilot_ids"] = ",".join(pilots_of) or "нет"
 
     for j, p in enumerate(pilot_logs, 1):
-        hist = run["pilot_history"][j - 1] if j - 1 < len(run["pilot_history"]) else {}
+        hist = pilots[j - 1] if j - 1 < len(pilots) else {}
         segment, target = p["candidate"].split(":")[:2]
         facts[f"P{j}"] = {"kind": "pilot", "fields": {
             "segment": segment, "target": target, "n": p["n"], "cost": hist.get("cost"),
@@ -146,7 +157,7 @@ def build_facts(run):
     if any(e["kind"] == "minimal_campaign" for e in trace):
         warnings.append(("attention", "Ни одна кампания не прошла порог надёжности: план — запасная кампания "
                                       "с минимальным риском, чтобы выполнить требование ТЗ.", ["M"]))
-    if facts["M"]["fields"]["remaining_budget"] > 0.3 * env.total_budget:
+    if facts["M"]["fields"]["remaining_budget"] > 0.3 * total_budget:
         warnings.append(("info", "Больше трети бюджета не распределено ({M.remaining_budget}): "
                                  "экономический выбор каналов в этой версии не реализован.", ["M"]))
     return facts, [{"severity": s, "text": t, "fact_ids": ids} for s, t, ids in warnings], links
@@ -385,53 +396,83 @@ def template_explanation(facts, code_warnings):
             "next_steps": [{"text": "Проверить кампании с предупреждениями и решить, запускать ли их.", "fact_ids": ["M"]}]}
 
 
+def explain_result(result, use_llm=True):
+    """
+    Объяснение УЖЕ готового результата запуска (агент повторно не запускается). Для backend: передай
+    данные текущего run_id в формате build_facts. Никогда не бросает исключение: при любой ошибке —
+    шаблон с причиной, поэтому сохранённый план от объяснения не зависит.
+    Возвращает {"explanation", "facts", "campaign_pilot_links", "llm_usage"}.
+    """
+    meta, reason = {"model": None, "attempts": 0}, "объяснение выключено"
+    try:
+        facts, code_warnings, links = build_facts(result)
+    except Exception as exc:                                   # данные запуска неполные — объяснить нечего
+        return {"explanation": {"source": "unavailable", "fallback_reason": f"нет данных для фактов: {exc}",
+                                "raw": None, "rendered": None},
+                "facts": {}, "campaign_pilot_links": {}, "llm_usage": meta}
+    answer = None
+    try:
+        if use_llm:
+            answer, meta, reason = explain_with_llm(facts, code_warnings, links)
+            if answer is not None:
+                problems = validate(answer, facts, links)
+                if problems:
+                    answer, reason = None, "ответ модели отклонён: " + "; ".join(problems[:3])
+    except Exception as exc:                                   # сбой обвязки не должен ломать результат
+        answer, reason = None, f"ошибка объяснения: {type(exc).__name__}: {exc}"
+    source = "llm" if answer is not None else "template"
+    if answer is None:
+        answer = template_explanation(facts, code_warnings)
+    rendered = {"summary": render(answer["summary"], facts),
+                "campaigns": [dict(c, explanation=render(c["explanation"], facts)) for c in answer["campaigns"]],
+                "warnings": [dict(w, text=render(w["text"], facts)) for w in answer["warnings"]],
+                "next_steps": [dict(s, text=render(s["text"], facts)) for s in answer["next_steps"]]}
+    return {"explanation": {"source": source, "fallback_reason": reason if source == "template" else None,
+                            "raw": answer, "rendered": rendered},
+            "facts": facts,
+            "campaign_pilot_links": {c: l["pilots"] for c, l in links.items()},
+            "llm_usage": meta}          # расход учтён всегда — и когда ответ отклонён и показан шаблон
+
+
 # ---------------------------------------------------------------- 4. отчёт
+def _write_report(out, report):
+    (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+
 def run_workflow(seed=42, use_llm=True, out=ROOT / "outputs"):
     load_env()
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     run = run_agent(seed)
     run["submission"].to_csv(out / "submission.csv", index=False)   # ровно как make_submission.py
-    csv_bytes = (out / "submission.csv").read_bytes()
-    facts, code_warnings, links = build_facts(run)
-
-    answer, meta, reason = (None, {"model": None, "attempts": 0}, "объяснение выключено (--no-llm)")
-    if use_llm:
-        answer, meta, reason = explain_with_llm(facts, code_warnings, links)
-        if answer is not None:
-            problems = validate(answer, facts, links)
-            if problems:
-                answer, reason = None, "ответ модели отклонён: " + "; ".join(problems[:3])
-    source = "llm" if answer is not None else "template"
-    if answer is None:
-        answer = template_explanation(facts, code_warnings)
-
-    rendered = {"summary": render(answer["summary"], facts),
-                "campaigns": [dict(c, explanation=render(c["explanation"], facts)) for c in answer["campaigns"]],
-                "warnings": [dict(w, text=render(w["text"], facts)) for w in answer["warnings"]],
-                "next_steps": [dict(s, text=render(s["text"], facts)) for s in answer["next_steps"]]}
+    result = run["result"]
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "seed": seed,
         "environment": "official_mock (не балл судейства)",
         "agent_sha256": hashlib.sha256((ROOT / "agent.py").read_bytes()).hexdigest(),
-        "submission_csv": {"path": "submission.csv", "sha256": hashlib.sha256(csv_bytes).hexdigest()},
-        "plan": run["campaigns"],
-        "metrics": facts["M"]["fields"],
-        "facts": facts,
-        "explanation": {"source": source, "fallback_reason": reason if source == "template" else None,
-                        "raw": answer, "rendered": rendered},
-        "campaign_pilot_links": {c: l["pilots"] for c, l in links.items()},
-        "llm_usage": meta,       # расход учтён всегда — и когда ответ отклонён и показан шаблон
-        "trace": run["trace"],
+        "submission_csv": {"path": "submission.csv",
+                           "sha256": hashlib.sha256((out / "submission.csv").read_bytes()).hexdigest()},
+        "plan": result["campaigns"],
+        "metrics": result["metrics"],
+        "pilots": result["pilots"],
+        "trace": result["trace"],
+        "explanation": None,
     }
-    (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    _write_report(out, report)                  # план сохранён ДО объяснения
+    report.update(explain_result(result, use_llm))
+    _write_report(out, report)
+
+    explanation, meta = report["explanation"], report["llm_usage"]
+    source, reason, rendered = explanation["source"], explanation["fallback_reason"], explanation["rendered"]
     md = [f"# Объяснение плана (seed {seed})", "",
           f"Источник объяснения: **{'модель ' + str(meta.get('model')) if source == 'llm' else 'шаблон'}**"
-          + (f" — {reason}" if source == "template" else ""), "", rendered["summary"], "", "## Кампании"]
-    md += [f"- **{c['id']}**: {c['explanation']}" for c in rendered["campaigns"]]
-    md += ["", "## Предупреждения"] + [f"- [{w['severity']}] {w['text']}" for w in rendered["warnings"]]
-    md += ["", "## Что проверить дальше"] + [f"- {s['text']}" for s in rendered["next_steps"]]
+          + (f" — {reason}" if reason else "")]
+    if rendered:
+        md += ["", rendered["summary"], "", "## Кампании"]
+        md += [f"- **{c['id']}**: {c['explanation']}" for c in rendered["campaigns"]]
+        md += ["", "## Предупреждения"] + [f"- [{w['severity']}] {w['text']}" for w in rendered["warnings"]]
+        md += ["", "## Что проверить дальше"] + [f"- {s['text']}" for s in rendered["next_steps"]]
     (out / "explanation.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     return report
 
@@ -444,7 +485,7 @@ def main():
     args = ap.parse_args()
     report = run_workflow(args.seed, use_llm=not args.no_llm, out=args.out)
     u = report["llm_usage"]
-    print(f"план: {report['metrics']['campaigns']} кампаний, net (мок) {report['metrics']['net']:,.0f}")
+    print(f"план: {len(report['plan'])} кампаний, net (мок) {report['metrics']['net_arpu_gain']:,.0f}")
     print(f"объяснение: {report['explanation']['source']}"
           + (f" ({report['explanation']['fallback_reason']})" if report['explanation']['fallback_reason'] else ""))
     if u.get("attempts"):

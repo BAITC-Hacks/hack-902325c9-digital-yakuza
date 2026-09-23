@@ -53,7 +53,7 @@ class FakeAPI:
 @pytest.fixture(scope="module")
 def plan():
     run = workflow.run_agent(42)
-    facts, warnings, links = workflow.build_facts(run)
+    facts, warnings, links = workflow.build_facts(run["result"])
     return facts, warnings, links
 
 
@@ -212,3 +212,35 @@ def test_csv_is_identical_with_and_without_llm(env, plan, tmp_path):
     csv_llm, csv_plain = (tmp_path / "llm" / "submission.csv").read_bytes(), (tmp_path / "plain" / "submission.csv").read_bytes()
     assert csv_llm == csv_plain == (ROOT / "submission.csv").read_bytes()
     assert with_llm["plan"] == without["plan"]
+
+
+# ---------------------------------------------------------------- объяснение готового результата (для backend)
+def backend_like_result():
+    """Как backend хранит запуск: кампании с полями подсчёта, события пилотов с лишними полями, метрики + extras."""
+    result = workflow.run_agent(42)["result"]
+    pilots = [dict(p, sequence=i, hypothesis="…", segment={}, pilot_size=p["n_customers"],
+                   observed_lift=p["observed_lift_ratio"]) for i, p in enumerate(result["pilots"], 1)]
+    metrics = dict(result["metrics"], environment="official_mock", pilot_count=len(pilots))
+    return dict(result, pilots=pilots, metrics=metrics)
+
+
+def test_explain_result_works_on_backend_payloads(env):
+    env.setenv("AGENT_LLM", "0")
+    out = workflow.explain_result(backend_like_result(), use_llm=True)
+    assert out["explanation"]["source"] == "template" and "AGENT_LLM" in out["explanation"]["fallback_reason"]
+    assert out["campaign_pilot_links"]["C1"] and len(out["facts"]) > 5
+
+
+def test_explain_result_never_raises_on_incomplete_data():
+    out = workflow.explain_result({"campaigns": [{"target_tariff": "tariff_8"}]}, use_llm=False)
+    assert out["explanation"]["source"] == "unavailable"
+
+
+def test_plan_is_saved_even_if_explanation_crashes(env, tmp_path):
+    def boom(*a, **k):
+        raise RuntimeError("сбой обвязки")
+    env.setattr(workflow, "explain_with_llm", boom)
+    report = workflow.run_workflow(42, use_llm=True, out=tmp_path)
+    saved = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert len(saved["plan"]) == 5 and (tmp_path / "submission.csv").exists()
+    assert report["explanation"]["source"] == "template" and "сбой обвязки" in report["explanation"]["fallback_reason"]

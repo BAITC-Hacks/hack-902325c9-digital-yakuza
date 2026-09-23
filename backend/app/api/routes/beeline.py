@@ -30,7 +30,7 @@ async def serialize_run(db, run):
         run_id=run.id, status=run.status, seed=run.seed,
         started_at=run.started_at, finished_at=run.finished_at,
         error=run.error, metrics=run.metrics, trace=run.trace or [],
-        campaigns=await get_campaigns(db, run.id),
+        campaigns=await get_campaigns(db, run.id), explanation=run.explanation,
     )
 
 

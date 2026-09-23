@@ -20,6 +20,7 @@ class RunResponse(BaseModel):
     metrics: dict[str, Any] | None = None
     trace: list[dict[str, Any]] = Field(default_factory=list)
     campaigns: list[dict[str, Any]] = Field(default_factory=list)
+    explanation: dict[str, Any] | None = None     # появляется после сохранения плана; план от него не зависит
 
 
 class PilotsResponse(BaseModel):

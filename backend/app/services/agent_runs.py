@@ -6,7 +6,9 @@ import tempfile
 from datetime import datetime, timezone
 from uuid import UUID
 
-from app.core.beeline import RUN_TIMEOUT_SECONDS
+from sqlalchemy import select
+
+from app.core.beeline import RUN_TIMEOUT_SECONDS, agent_directory
 from app.core.database import session_factory
 from app.models.agent_run import AgentRun, CampaignResult, PilotResult
 
@@ -37,6 +39,39 @@ async def complete_run(run_id: UUID, result: dict) -> None:
         run.status = "completed"
         run.finished_at = datetime.now(timezone.utc)
         await db.commit()
+
+
+def run_result(run: AgentRun, campaigns: list[dict], pilots: list[dict]) -> dict:
+    """Данные сохранённого запуска в формате workflow.build_facts (агент повторно не запускается)."""
+    metrics = run.metrics or {}
+    total_budget = (metrics.get("remaining_budget", 0) or 0) + (metrics.get("total_cost", 0) or 0)
+    return {"campaigns": campaigns, "pilots": pilots, "trace": run.trace or [], "metrics": metrics,
+            "total_budget": total_budget or 100_000}
+
+
+async def explain_run(run_id: UUID) -> None:
+    """
+    Объяснение УЖЕ сохранённого плана этого run_id: берёт кампании, пилоты, журнал и метрики из базы,
+    вызывает workflow.explain_result (он не бросает исключений) и сохраняет run.explanation.
+    План к этому моменту уже закоммичен — сбой объяснения его не затрагивает.
+    """
+    async with session_factory() as db:
+        run = await db.get(AgentRun, run_id)
+        if run is None or run.status != "completed":
+            return
+        campaigns = (await db.scalars(select(CampaignResult).where(CampaignResult.run_id == run_id)
+                                      .order_by(CampaignResult.sequence))).all()
+        pilots = (await db.scalars(select(PilotResult).where(PilotResult.run_id == run_id)
+                                   .order_by(PilotResult.sequence))).all()
+        result = run_result(run, [c.payload for c in campaigns], [p.payload for p in pilots])
+    agent_directory()                      # распакованный пакет агента в sys.path
+    import workflow
+    explanation = await asyncio.to_thread(workflow.explain_result, result, True)
+    async with session_factory() as db:
+        run = await db.get(AgentRun, run_id)
+        if run is not None:
+            run.explanation = explanation
+            await db.commit()
 
 
 async def fail_run(run_id: UUID, error: str) -> None:
@@ -74,7 +109,11 @@ async def execute_run(run_id: UUID, seed: int) -> None:
                 return result
 
             result = await asyncio.wait_for(consume(), timeout=RUN_TIMEOUT_SECONDS)
-            await complete_run(run_id, result)
+            await complete_run(run_id, result)            # план сохранён
+            try:
+                await explain_run(run_id)                 # объяснение — отдельно, после плана
+            except Exception:
+                logger.exception("Explanation for run %s failed; the saved plan is unaffected", run_id)
         except TimeoutError:
             if process.returncode is None:
                 try:

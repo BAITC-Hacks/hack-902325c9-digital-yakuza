@@ -22,6 +22,7 @@ class AgentRun(Base):
     metrics: Mapped[dict | None] = mapped_column(JSONB)
     trace: Mapped[list | None] = mapped_column(JSONB)
     submission_csv: Mapped[str | None] = mapped_column(Text)
+    explanation: Mapped[dict | None] = mapped_column(JSONB)
 
 
 class PilotResult(Base):

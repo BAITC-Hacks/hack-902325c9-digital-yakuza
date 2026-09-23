@@ -15,7 +15,7 @@ def agent_directory() -> Path:
     archive_path = Path(__file__).resolve().parents[2] / "vendor" / "beeline_agent.zip"
     temporary = tempfile.TemporaryDirectory(prefix="beeline-agent-")
     atexit.register(temporary.cleanup)
-    directory = Path(temporary.name)
+    directory = Path(temporary.name).resolve()     # на Windows временная папка бывает с коротким именем (9325~1)
     with ZipFile(archive_path) as archive:
         for member in archive.infolist():
             target = (directory / member.filename).resolve()
