@@ -1,0 +1,5 @@
+campaign_name,filter_arpu_segment,filter_data_segment,filter_call_segment,filter_current_tariff,target_tariff,channel
+LOW_tariff_9_1,LOW,,,tariff_1;tariff_10;tariff_11;tariff_13;tariff_14;tariff_15;tariff_16;tariff_17;tariff_18;tariff_19;tariff_2;tariff_20;tariff_3;tariff_4;tariff_5;tariff_6;tariff_7;tariff_8,tariff_9,sms
+MID_tariff_8_2,MID,,,tariff_1;tariff_10;tariff_11;tariff_12;tariff_13;tariff_15;tariff_16;tariff_17;tariff_18;tariff_19;tariff_2;tariff_20;tariff_3;tariff_4;tariff_6;tariff_9,tariff_8,sms
+LOW_tariff_8_3,LOW,,,tariff_12;tariff_9,tariff_8,sms
+HIGH_tariff_11_4,HIGH,,,tariff_1;tariff_12;tariff_16;tariff_17;tariff_18;tariff_20;tariff_5;tariff_6;tariff_8;tariff_9,tariff_11,sms
