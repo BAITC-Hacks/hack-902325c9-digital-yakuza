@@ -32,9 +32,6 @@ import pandas as pd
 
 from sim.worlds import ROOT, list_scenarios, make_world
 
-STRATEGY_NAMES = ["agent", "history_only", "known", "known_channels"]
-
-
 def _true_table(world, dict_tariff) -> dict:
     """Истинный q = pct × conv для каждой тройки мира в формате таблицы агента (q, q_se, n_obs)."""
     im = world.impact_model
@@ -136,7 +133,7 @@ def main():
     ap.add_argument("--scenarios", default="all")
     ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--milp", action="store_true", help="добавить лучший план при известных эффектах (дольше)")
-    ap.add_argument("--out", default=str(ROOT / "sim" / "reports" / "headroom.csv"))
+    ap.add_argument("--out", default=str(ROOT / "sim" / "reports" / "headroom_runs.csv"))
     args = ap.parse_args()
     scenarios = list_scenarios() if args.scenarios == "all" else args.scenarios.split(",")
     tasks = [(sc, s, args.milp) for sc in scenarios for s in range(args.worlds)]

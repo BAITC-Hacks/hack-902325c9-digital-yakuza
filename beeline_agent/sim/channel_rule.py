@@ -79,7 +79,7 @@ def main():
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--worlds", type=int, default=15)
     ap.add_argument("--jobs", type=int, default=4)
-    ap.add_argument("--out", default=str(ROOT / "sim" / "reports" / "channel_rule.csv"))
+    ap.add_argument("--out", default=str(ROOT / "sim" / "reports" / "channel_rule_runs.csv"))
     args = ap.parse_args()
     tasks = [(sc, s) for sc in list_scenarios() for s in range(args.start, args.start + args.worlds)]
     with ProcessPoolExecutor(max_workers=args.jobs) as pool:

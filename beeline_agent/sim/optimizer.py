@@ -18,8 +18,16 @@
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scoring_core import MAX_CAMPAIGNS, MAX_TOTAL_CONTACTS, TOTAL_BUDGET  # noqa: E402
 
 SEGMENTS = ("LOW", "MID", "HIGH")
 DATA_SEGMENTS = ("NON_USER", "LITE", "HEAVY")
@@ -144,7 +152,7 @@ def _candidates(atoms: pd.DataFrame, customers: pd.DataFrame, lift: dict, target
 
 
 def optimal_plan(world, profile: pd.DataFrame, dict_tariff: pd.DataFrame, channels: dict,
-                 budget: float = 100_000, contacts: int = 15_000, max_campaigns: int = 10,
+                 budget: float = TOTAL_BUDGET, contacts: int = MAX_TOTAL_CONTACTS, max_campaigns: int = MAX_CAMPAIGNS,
                  time_limit: float = 20.0) -> tuple[list, dict]:
     """(план в формате ТЗ, сводка решения) — лучший план при известных эффектах мира."""
     return plan_from_lift(lift_table(world, dict_tariff, channels), profile, dict_tariff, channels,
@@ -152,7 +160,7 @@ def optimal_plan(world, profile: pd.DataFrame, dict_tariff: pd.DataFrame, channe
 
 
 def plan_from_lift(lift: dict, profile: pd.DataFrame, dict_tariff: pd.DataFrame, channels: dict,
-                   budget: float = 100_000, contacts: int = 15_000, max_campaigns: int = 10,
+                   budget: float = TOTAL_BUDGET, contacts: int = MAX_TOTAL_CONTACTS, max_campaigns: int = MAX_CAMPAIGNS,
                    time_limit: float = 20.0) -> tuple[list, dict]:
     """
     Лучший план для заданной таблицы эффектов lift[(тариф, сегмент, цель, канал)] = pct · min(conv · m, 1).

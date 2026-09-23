@@ -47,6 +47,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from mock_environment import _mock_fallback, _mock_impact_model  # noqa: E402
+from scoring_core import CHANNELS, MAX_CAMPAIGNS, MAX_TOTAL_CONTACTS, TOTAL_BUDGET  # noqa: E402
 from prior import hier  # noqa: E402
 from prior.history import clean_history  # noqa: E402
 
@@ -379,8 +380,8 @@ def make_suite(n_per_scenario: int = 50, scenarios=None, start_seed: int = 0) ->
 
 # ---------------------------------------------------- прокси «оракул / без разведки»
 _AUD = None
-_MULT = np.array([0.50, 0.65, 0.85, 1.20])        # push, sms, digital_ads, call
-_COST = np.array([0.0, 4.0, 22.0, 160.0])
+_MULT = np.array([c["conversion_multiplier"] for c in CHANNELS.values()])   # push, sms, digital_ads, call
+_COST = np.array([float(c["cost_per_contact"]) for c in CHANNELS.values()])
 
 
 def _audience(base: dict) -> dict:
@@ -399,7 +400,8 @@ def _audience(base: dict) -> dict:
     return _AUD
 
 
-def _plan_value(pct_choose, conv_choose, pct_true, conv_true, base, contacts=15000, budget=100000.0, max_campaigns=10):
+def _plan_value(pct_choose, conv_choose, pct_true, conv_true, base, contacts=MAX_TOTAL_CONTACTS,
+                budget=float(TOTAL_BUDGET), max_campaigns=MAX_CAMPAIGNS):
     """Жадный план без пилотов: в каждой ячейке аудитории — лучшая (цель, канал) по «своим» эффектам,
     ячейки по убыванию ожидаемой ценности, лимиты охвата/бюджета/10 кампаний. Возвращает ценность по истине."""
     aud = _audience(base)
@@ -507,8 +509,7 @@ def _check() -> bool:
 def _smoke(n: int) -> None:
     """Быстрый прогон текущего agent.py (без изменений) на n мирах каждого сценария — не замена прогонщику."""
     from environment import make_environment
-    from mock_environment import CHANNELS, MAX_TOTAL_CONTACTS, TOTAL_BUDGET
-    from scoring_core import MAX_CAMPAIGNS, sanitize_campaigns, score_campaigns
+    from scoring_core import sanitize_campaigns, score_campaigns
     import agent as agent_mod
 
     profile = pd.read_csv(ROOT / "customer_profile.csv")
