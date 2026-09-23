@@ -9,6 +9,7 @@ from app.core.beeline import agent_directory, RUN_TIMEOUT_SECONDS
 @lru_cache
 def get_case_summary() -> dict:
     directory = agent_directory()
+    import agent
     from environment import MAX_PILOTS, MIN_PILOT_CUSTOMERS, MAX_PILOT_CUSTOMERS
     from scoring_core import CHANNELS, TOTAL_BUDGET, MAX_TOTAL_CONTACTS
     from scoring_core import MAX_CAMPAIGNS, MAX_CUSTOMERS_PER_CAMPAIGN
@@ -29,6 +30,22 @@ def get_case_summary() -> dict:
         "environment": "official_mock",
         "synthetic_data": True,
         "agent_sha256": manifest["agent.py"],
+        "strategy": {
+            **{
+                field: getattr(agent, constant)
+                for field, constant in {
+                    "max_pilot_budget_fraction": "EXPLORE_BUDGET_SHARE",
+                    "max_pilot_contacts_fraction": "EXPLORE_CONTACT_SHARE",
+                    "exploration_timeout_seconds": "TIME_BUDGET_S",
+                    "max_pilots_per_candidate": "MAX_PILOTS_PER_CANDIDATE",
+                    "pilot_channel": "PILOT_CHANNEL",
+                    "fallback_channel": "FALLBACK_CHANNEL",
+                    "prior_format": "PRIOR_FORMAT",
+                    "prior_mode": "PRIOR_MODE",
+                }.items() if hasattr(agent, constant)
+            },
+            "max_pilots": MAX_PILOTS,
+        },
         "customers": len(profile),
         "baseline_total_arpu": float(profile["predicted_arpu"].sum()),
         "mean_predicted_arpu": float(profile["predicted_arpu"].mean()),

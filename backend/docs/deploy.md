@@ -5,10 +5,10 @@ Production: https://hackalem-backend-5a3d74f6419c.herokuapp.com/
 
 ## Настройки deployment
 
-1. В Heroku Deploy подключить GitHub repository, выбрать `main` и включить Automatic Deploys. Backend deployment через GitHub Actions не использовать.
+1. Сохранить ручной deployment: `git push heroku main`, только после отдельного разрешения. Automatic Deploys и backend deployment через GitHub Actions для этой схемы не использовать.
 2. Сохранить Config Var `APP_BASE=backend` для monorepo.
-3. Порядок buildpacks: `heroku-buildpack-monorepo`, затем `heroku/python`. Python 3.12 задаётся файлом `backend/.python-version`.
-4. Использовать существующий внешний PostgreSQL. Production Config Vars:
+3. Порядок buildpacks: `https://github.com/lstoll/heroku-buildpack-monorepo`, затем `heroku/python`. Python 3.12 задаётся файлом `backend/.python-version`.
+4. Использовать существующий Aiven PostgreSQL. Production Config Vars:
 
 | Переменная | Значение |
 | --- | --- |
@@ -58,12 +58,12 @@ heroku run "alembic upgrade head" --app hackalem-backend
 
 Во время deployment-аудита не запускать upgrade, downgrade, reset и команды удаления данных. Миграции автоматически не выполняются текущим Procfile.
 
-## Проверка Automatic Deploys
+## Ручной deployment
 
-1. В Heroku Deploy проверить подключённый repository, ветку main и включённые Automatic Deploys.
-2. Если включено Wait for CI to pass before deploy, убедиться, что необходимые проверки существуют и проходят.
-3. После согласованного изменения выполнить `git push origin main` и записать SHA commit.
-4. В Heroku Activity проверить автоматический запуск Build именно для этого SHA, успешный Build и Release. Кнопку Deploy Branch для этой проверки не нажимать.
+1. Из корня репозитория проверить `python -B backend/scripts/package_beeline.py --check`. Ожидается `AGENT PACKAGE: CURRENT`.
+2. Выполнить локальные проверки из `backend/docs/beeline-api.md`, показать diff и отчёт. Обновление объяснений агента использует существующие JSONB-поля и не требует новой миграции.
+3. Только после отдельного разрешения зафиксировать изменения в main. Проверить `git status`, `git log -1 --oneline` и `git remote get-url heroku`: remote должен указывать на hackalem-backend.
+4. Только после отдельного разрешения выполнить `git push heroku main`. Команда отправляет коммиты, а не незакоммиченные изменения. Дождаться успешных Build и Release для нужного SHA.
 5. Проверить startup logs:
 
 ```sh
@@ -72,16 +72,7 @@ heroku logs --num 200 --app hackalem-backend
 
 6. Проверить HTTP 200 для /, /health и /docs. В логах не должно быть H10, ошибок обязательных настроек, DATABASE_URL, подключения БД и PORT.
 
-## Переключение на официальный HackAlem repository
-
-1. Убедиться, что официальный repository содержит backend/ с Procfile, requirements.txt и .python-version. Для подключения нужны права repository admin; для организации также проверить доступ Heroku OAuth и членство пользователя.
-2. В Deploy текущего приложения hackalem-backend отключить старый GitHub repository.
-3. Подключить официальный repository, выбрать main и включить Automatic Deploys.
-4. Оставить существующие Config Vars, APP_BASE=backend и оба buildpack без изменений. Не копировать секреты в Git.
-5. Сохранить тот же DATABASE_URL и существующую PostgreSQL; приложение и БД не пересоздавать.
-6. Выполнить первый deploy main. При переключении допустим Deploy Branch; для отдельной проверки автодеплоя нужен новый push без этой кнопки.
-7. Дождаться успешного Release и проверить /health, /docs и startup logs.
-8. При необходимости заменить только CORS_ORIGINS на адрес нового frontend. Перенос repository сам по себе не требует смены ключей или БД.
+Официальный repository: https://github.com/BAITC-Hacks/hack-902325c9-digital-yakuza. Frontend: https://hackalem-frontend.vercel.app/. Существующие Config Vars, APP_BASE, buildpacks, Heroku app и PostgreSQL не менять при обновлении агента.
 
 Каталог beeline_case_participants/ исключён из Git на любой глубине. Перед push проверить git status и отсутствие .env среди отслеживаемых файлов.
 

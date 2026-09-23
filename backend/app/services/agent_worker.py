@@ -28,6 +28,62 @@ def emit(kind, data):
     ), flush=True)
 
 
+def observed_agent(agent_class, env):
+    class ObservedAgent(agent_class):
+        def _log(self, kind, **data):
+            super()._log(kind, **data)
+            emit("decision", self.trace[-1])
+            if kind == "pilot" and env.pilot_history:
+                update = {
+                    key: data[key] for key in ("mu", "sd", "lcb") if key in data
+                }
+                if "candidate" in data:
+                    update["candidate_id"] = data["candidate"]
+                emit("pilot_update", {"sequence": len(env.pilot_history), **update})
+
+    return ObservedAgent(verbose=False)
+
+
+def decision_info(trace):
+    warnings = []
+    stop_reason = None
+    fallback_reason = None
+    fallback = None
+    recovered = False
+    for event in trace:
+        kind = event.get("kind")
+        if kind == "explore_stop":
+            stop_reason = event.get("reason")
+            warnings.append({"code": "partial_exploration", "event": event})
+        elif kind in {"error", "pilot_error", "fallback_error", "minimal_error"}:
+            warnings.append({"code": "recoverable_error", "event": event})
+            if kind == "error":
+                recovered = True
+                fallback_reason = event.get("error")
+        elif kind in {"plan_drop", "minimal_skip"}:
+            warnings.append({"code": "strategy_warning", "event": event})
+        elif kind == "minimal_campaign":
+            fallback = event
+            fallback_reason = event.get("reason")
+            warnings.append({"code": "fallback_used", "event": event})
+    if recovered and fallback is None:
+        warnings.append({"code": "fallback_used", "reason": fallback_reason})
+    info = {
+        "warnings": warnings,
+        "stop_reason": stop_reason,
+        "is_fallback": recovered or fallback is not None,
+        "fallback_reason": fallback_reason,
+    }
+    if fallback is not None:
+        info["estimate_source"] = fallback.get("estimate")
+        info["risk_info"] = {
+            key: fallback[key]
+            for key in ("mu", "sd", "downside", "exposure_arpu", "expected_gain")
+            if key in fallback
+        }
+    return info
+
+
 def run(seed):
     started = time.monotonic()
     directory = agent_directory()
@@ -67,7 +123,7 @@ def run(seed):
         return result
 
     env.run_pilot = record_pilot
-    agent = Agent(verbose=False)
+    agent = observed_agent(Agent, env)
     campaigns = agent.act(env)
     emit("trace", agent.trace)
     if not isinstance(campaigns, list) or not 1 <= len(campaigns) <= MAX_CAMPAIGNS:
@@ -103,6 +159,14 @@ def run(seed):
         {**campaign, **detail}
         for campaign, detail in zip(campaigns, details[len(pilots):])
     ]
+    info = decision_info(agent.trace)
+    if info["is_fallback"]:
+        for campaign in finals:
+            campaign.update({
+                key: info[key]
+                for key in ("is_fallback", "fallback_reason", "estimate_source", "risk_info")
+                if key in info
+            })
     csv = pd.DataFrame(campaigns).reindex(columns=CAMPAIGN_COLUMNS).to_csv(index=False)
     manifest = json.loads((directory / "manifest.json").read_text())
     emit("result", {
@@ -110,6 +174,7 @@ def run(seed):
         "submission_csv": csv,
         "metrics": {
             **score,
+            **info,
             "environment": "official_mock",
             "score_source": "official_mock_scoring_not_judging_score",
             "final_campaign_count": len(campaigns),

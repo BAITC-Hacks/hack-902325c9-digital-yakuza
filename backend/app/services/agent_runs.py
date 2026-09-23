@@ -6,9 +6,12 @@ import tempfile
 from datetime import datetime, timezone
 from uuid import UUID
 
+from sqlalchemy import select
+
 from app.core.beeline import RUN_TIMEOUT_SECONDS
 from app.core.database import session_factory
 from app.models.agent_run import AgentRun, CampaignResult, PilotResult
+from app.services.agent_worker import decision_info
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +23,19 @@ async def save_event(run_id: UUID, kind: str, data) -> None:
             raise RuntimeError("Run is no longer active")
         if kind == "pilot":
             db.add(PilotResult(run_id=run_id, sequence=data["sequence"], payload=data))
+        elif kind == "pilot_update":
+            pilot = await db.scalar(select(PilotResult).where(
+                PilotResult.run_id == run_id, PilotResult.sequence == data["sequence"],
+            ))
+            if pilot is None:
+                raise ValueError("Pilot update received before pilot result")
+            pilot.payload = {**pilot.payload, **data}
+        elif kind == "decision":
+            run.trace = [*(run.trace or []), data]
+            run.metrics = {**(run.metrics or {}), **decision_info(run.trace)}
         elif kind == "trace":
             run.trace = data
+            run.metrics = {**(run.metrics or {}), **decision_info(data)}
         await db.commit()
 
 
@@ -64,7 +78,7 @@ async def execute_run(run_id: UUID, seed: int) -> None:
                 result = None
                 async for line in process.stdout:
                     event = json.loads(line)
-                    if event["type"] in {"pilot", "trace"}:
+                    if event["type"] in {"pilot", "pilot_update", "decision", "trace"}:
                         await save_event(run_id, event["type"], event["data"])
                     elif event["type"] == "result":
                         result = event["data"]

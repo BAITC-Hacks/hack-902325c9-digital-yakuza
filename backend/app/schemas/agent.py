@@ -20,6 +20,12 @@ class RunResponse(BaseModel):
     metrics: dict[str, Any] | None = None
     trace: list[dict[str, Any]] = Field(default_factory=list)
     campaigns: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
+    stop_reason: str | None = None
+    is_fallback: bool | None = None
+    fallback_reason: str | None = None
+    estimate_source: str | None = None
+    risk_info: dict[str, Any] | None = None
 
 
 class PilotsResponse(BaseModel):

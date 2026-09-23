@@ -26,11 +26,18 @@ async def require_run(db, run_id):
 
 
 async def serialize_run(db, run):
+    metrics = run.metrics or {}
     return RunResponse(
         run_id=run.id, status=run.status, seed=run.seed,
         started_at=run.started_at, finished_at=run.finished_at,
         error=run.error, metrics=run.metrics, trace=run.trace or [],
         campaigns=await get_campaigns(db, run.id),
+        warnings=metrics.get("warnings", []),
+        stop_reason=metrics.get("stop_reason"),
+        is_fallback=metrics.get("is_fallback"),
+        fallback_reason=metrics.get("fallback_reason"),
+        estimate_source=metrics.get("estimate_source"),
+        risk_info=metrics.get("risk_info"),
     )
 
 

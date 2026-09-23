@@ -1,4 +1,5 @@
 import type { AgentRun, CaseSummary, PilotsResponse } from '../types/api';
+import { serverMessage } from '../utils/labels';
 
 const baseUrl = import.meta.env.VITE_API_URL?.trim().replace(/\/+$/, '');
 
@@ -29,11 +30,11 @@ async function request<T>(path: string, options: RequestInit = {}, csv = false):
     if (!response.ok) {
       const body: unknown = await response.json().catch(() => null);
       const detail = body && typeof body === 'object' && 'detail' in body ? body.detail : null;
-      throw new ApiError(response.status, typeof detail === 'string' ? detail : 'Ошибка API: HTTP ' + response.status);
+      throw new ApiError(response.status, typeof detail === 'string' ? serverMessage(detail) : 'Ошибка запроса: HTTP ' + response.status);
     }
     if (csv) {
       if (!response.headers.get('content-type')?.includes('text/csv')) {
-        throw new Error('Backend вернул неожиданный формат вместо CSV.');
+        throw new Error('Сервер вернул неожиданный формат вместо CSV.');
       }
       return await response.blob() as T;
     }
@@ -41,9 +42,9 @@ async function request<T>(path: string, options: RequestInit = {}, csv = false):
   } catch (error) {
     if (error instanceof ApiError) throw error;
     if (controller.signal.aborted) {
-      throw new Error(options.signal?.aborted ? 'Запрос отменён.' : 'Backend не ответил за 30 секунд. Обновите данные.');
+      throw new Error(options.signal?.aborted ? 'Запрос отменён.' : 'Сервер не ответил за 30 секунд. Обновите данные.');
     }
-    if (error instanceof TypeError) throw new Error('Backend недоступен. Проверьте локальный запуск, VITE_API_URL и CORS.');
+    if (error instanceof TypeError) throw new Error('Нет соединения с сервером. Убедитесь, что он запущен, и повторите попытку.');
     throw error;
   } finally {
     window.clearTimeout(timeout);
