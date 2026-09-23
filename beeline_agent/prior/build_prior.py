@@ -19,6 +19,10 @@ PRIOR, файлы data/ во время работы агента не откр�
     распределение Δ% скошено (много -100% и +300%), поэтому медиана систематически занижает;
   * доля перехода — сглажена к структуре переходов сегмента (α = 10), чтобы 1 из 2 не давало 50%;
   * pct_std — внутригрупповой разброс, для малых групп подтянут к разбросу сегмента.
+
+Отдельно — PRIOR_UNSEEN (тот же формат, n_obs = 0) для 12 тарифов без истории:
+осторожная оценка по правилу «подходит ли пакет потреблению ячейки» и по ближайшему тарифу-аналогу
+(prior/unseen.py, таблица prior/prior_unseen.csv). Агент решает сам, пускать ли их в кандидаты.
 """
 
 import sys
@@ -29,6 +33,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from history import KEYS, ROOT, eb_shrink, load_history, pooled_sigma2  # noqa: E402
+from unseen import build_unseen  # noqa: E402
 
 CONV_ALPHA = 10.0            # сила сглаживания доли переходов
 VAR_PRIOR_DOF = 5            # сколько «наблюдений» весит разброс сегмента при оценке pct_std
@@ -68,12 +73,21 @@ def build_prior(hist: pd.DataFrame, price: pd.Series) -> tuple[pd.DataFrame, dic
     return cells[cols].sort_values(KEYS).reset_index(drop=True), meta
 
 
-def embed(prior: pd.DataFrame, agent_path: Path) -> None:
-    lines = [START, "PRIOR = {"]
-    for r in prior.sort_values(["tariff_from", "arpu_segment", "tariff_to"]).itertuples():
+def _dict_lines(name: str, table: pd.DataFrame, comment: str) -> list:
+    lines = [comment, f"{name} = {{"]
+    for r in table.sort_values(["tariff_from", "arpu_segment", "tariff_to"]).itertuples():
         lines.append(f'    ("{r.tariff_from}", "{r.arpu_segment}", "{r.tariff_to}"): '
                      f"({r.q:.5f}, {int(r.n_obs)}, {r.pct_std:.4f}),")
-    lines += ["}", END]
+    lines.append("}")
+    return lines
+
+
+def embed(prior: pd.DataFrame, agent_path: Path, unseen: pd.DataFrame = None) -> None:
+    lines = [START] + _dict_lines("PRIOR", prior, "# (from, seg, to) -> (q, n_obs, pct_std): история смен тарифов")
+    if unseen is not None and len(unseen):
+        lines += _dict_lines("PRIOR_UNSEEN", unseen,
+                             "# тарифы без истории: осторожная оценка по пакету и тарифу-аналогу, n_obs = 0")
+    lines.append(END)
     text = agent_path.read_text(encoding="utf-8")
     head, rest = text.split(START, 1)
     _, tail = rest.split(END, 1)
@@ -85,7 +99,12 @@ def main() -> None:
     price = pd.read_csv(ROOT / "data" / "dict_tariff.csv").set_index("tariff_plan_code")["price_tariff"]
     prior, meta = build_prior(hist, price)
     prior.to_csv(ROOT / "prior" / "prior_table.csv", index=False)
-    embed(prior, ROOT / "agent.py")
+    tariffs = pd.read_csv(ROOT / "data" / "dict_tariff.csv")
+    profile = pd.read_csv(ROOT / "customer_profile.csv")
+    unseen = build_unseen(prior, meta["segments"], meta["median_price"], profile, tariffs,
+                          conv_median=float(prior["conversion_raw"].median()))
+    unseen.to_csv(ROOT / "prior" / "prior_unseen.csv", index=False)
+    embed(prior, ROOT / "agent.py", unseen)
 
     print("Чистка change_tariff:", ", ".join(f"{k}={v}" for k, v in clean_report.items()))
     for seg, p in meta["segments"].items():
@@ -94,6 +113,8 @@ def main() -> None:
     print(f"prior: {len(prior)} троек, положительных {(prior['q'] > 0).sum()} "
           f"(было {(prior['q_raw'] > 0).sum()}), знак сменился у {moved}; "
           f"надёжность: {prior['reliability'].value_counts().to_dict()}; вшито в agent.py")
+    print(f"prior_unseen: {len(unseen)} троек по 12 тарифам без истории, положительных {(unseen['q'] > 0).sum()}; "
+          f"пакет: {unseen['fit_label'].value_counts().to_dict()}")
 
 
 if __name__ == "__main__":
