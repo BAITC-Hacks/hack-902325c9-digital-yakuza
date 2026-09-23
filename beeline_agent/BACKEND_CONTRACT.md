@@ -1,6 +1,7 @@
 # Контракт backend ↔ агент Beeline (актуальная версия)
 
-Агент: `beeline_agent/agent.py`, коммит `a631a16`, **sha256 `a12541f033a91d74730dd067c7ad04b017a2e0e4212aed9c00a5ef2041a00d8e`**.
+Агент: `beeline_agent/agent.py`, ветка `Agent`, **sha256 `59547e1d9a5695c67085d6db528c6d1636da5cbe34c0ee4f8f4a4f08dff52871`**
+(экономика каналов; прошлая версия `a12541f0…` — `OUTDATED`).
 ИИ-объяснение: `beeline_agent/workflow.py` (`explain_result`), ветка `Agent`, коммит `2d8cceb`+.
 Backend ничего не считает сам: запускает агента, сохраняет его вывод, отдаёт фронту. Любые числа — из агента,
 метрики — из `scoring_core.score_campaigns` организаторов.
@@ -18,6 +19,9 @@ Backend ничего не считает сам: запускает агента
   data/change_tariff.csv, data/dict_tariff.csv` + `manifest.json` (sha256 каждого файла).
 - `CURRENT`/`OUTDATED`: сравнивать `manifest.json["agent.py"]` с ожидаемым sha выше (константа в backend или
   переменная `EXPECTED_AGENT_SHA256`). Папки `beeline_agent/` на Heroku не будет — сравнивать не с ней.
+- Переводы строк: sha выше — для файла с LF (как в git). При `core.autocrlf=true` на Windows файл на диске с CRLF,
+  его sha `d19efe79…` — пакет соберётся с ним и будет `OUTDATED`. Перед сборкой: `git config core.autocrlf false`
+  и `git checkout -- beeline_agent/agent.py`, либо принимать оба значения.
 - Запуск — отдельный процесс (`app.services.agent_worker`), seed по умолчанию 42, общий лимит 600 с
   (агент сам укладывается в ~1 с, свой таймер 180 с).
 
@@ -34,6 +38,7 @@ filter_call_segment — только у запасной], target_tariff, channe
 | `pilot` | `candidate, channel, n, observed, mu, sd, lcb` | пилот и оценка **после** него (доля ARPU, до множителя канала; observed — на канале пилота) |
 | `pilot_error` | `candidate, error` | пилот не выполнился |
 | `explore_stop` | `reason` [+ `spent_budget, spent_contacts`] | почему разведка остановилась (если нет — израсходованы все 20 пилотов) |
+| `channels` | `assigned{candidate: channel}, budget_left` | какой канал выбран каждой кампании и сколько бюджета осталось |
 | `plan_add` | `candidate, channel, contacts, mu, lcb, pilots` | кампания в плане и её доказательства |
 | `plan_drop` | `campaign, reason` | кампания отброшена проверкой |
 | `minimal_campaign` | `cell, contacts, channel, mu, sd, estimate, downside, exposure_arpu, expected_gain, reason` | **запасная** кампания (ни одна не прошла порог) |
@@ -61,8 +66,9 @@ capped_*`). **`n_campaigns` включает пилоты** — число ка�
 `PRIOR_MODE='raw'`, `PRIOR_SHRINK=0.5`, `TRANSFER_SD=0.10`, `RISK_K=1.0`, `MAX_PILOTS_PER_CANDIDATE=2`,
 `PILOT_CHANNEL='sms'`, `PILOT_N_LARGE=200`, `PILOT_N_SMALL=100`, `SMALL_SEGMENT=600`, `TIME_BUDGET_S=180`,
 `EXPLORE_BUDGET_SHARE=0.25`, `EXPLORE_CONTACT_SHARE=0.30`, `FALLBACK_CHANNEL='push'`, `FALLBACK_RISK_K=1.0`,
-`MAX_CAMPAIGNS=10`, `MAX_PER_CAMPAIGN=5000`, `MIN_CANDIDATE_SIZE=30`. Каналы плана: sms (push — если не хватает
-бюджета и у запасной кампании); `call`/`digital_ads` агент не использует.
+`MAX_CAMPAIGNS=10`, `MAX_PER_CAMPAIGN=5000`, `MIN_CANDIDATE_SIZE=30`, `CHANNEL_ECONOMICS=True`,
+`PILOT_REPEAT_ONLY_IF_UNCLEAR=False`, `EXPLORE_UNSEEN=False`. Канал кампании выбирается по нижней границе
+ценности: push → sms → digital_ads → call, пока доплата окупается и есть бюджет (на seed 42 — sms и digital_ads).
 
 ## 4. ИИ-объяснение (уже в `origin/Agent`)
 - После `complete_run` (план закоммичен) → `explain_run(run_id)`: кампании, пилоты, журнал, метрики **этого run_id из
@@ -87,10 +93,10 @@ capped_*`). **`n_campaigns` включает пилоты** — число ка�
 | `GET /api/agent/submission?run_id` | CSV без изменений |
 
 ## 6. Приёмка (seed 42)
-- 5 кампаний, 20 пилотов, `total_cost = 53 280`, `total_contacts = 13 320`, самая большая кампания 4 108,
-  `net_arpu_gain = 4 777 157`, `status = PASS`.
+- 5 кампаний (каналы: sms, digital_ads, sms, sms, digital_ads), 20 пилотов, `total_cost = 95 094`,
+  `total_contacts = 13 320`, самая большая кампания 4 108, `net_arpu_gain = 5 165 453`, `status = PASS`.
 - CSV совпадает с `beeline_agent/submission.csv` (переводы строк не в счёт).
-- `manifest.json["agent.py"] = a12541f0…` → `CURRENT`.
+- `manifest.json["agent.py"] = 59547e1d…` → `CURRENT`.
 - `explanation.campaign_pilot_links`: C1→P5,P6; C2→P13,P14; C3→P15,P16; C4→P7,P8; C5→P9,P10.
 - Сломать объяснение (например, неверный ключ) → план и CSV на месте, `explanation.source = "template"`.
 - Ключей API нет ни в базе, ни в логах, ни в ответах.
