@@ -206,7 +206,7 @@ def main():
     t1_matches_local_eval()
     t2_ceiling_is_ceiling(worlds)
     t3_deterministic()
-    t4_calibration([make_world(s, "random") for s in range(10)])
+    t4_calibration([make_world(s, "random") for s in range(40)])   # 10 миров — шум (медиана гуляет от −9% до +36%)
     r1_honest_play()
     r2_time()
     r3_fallback()
