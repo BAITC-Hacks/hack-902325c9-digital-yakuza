@@ -40,7 +40,7 @@ def clean_history(raw: pd.DataFrame):
     df["pct_raw"] = (df["AVG_ARPU_NEXT_3M"] - df["AVG_ARPU_PREV_3M"]) / df["AVG_ARPU_PREV_3M"]
     df["pct"] = df["pct_raw"].clip(*PCT_CLIP)
     report["pct_clipped_at_+300%"] = int((df["pct_raw"] > PCT_CLIP[1]).sum())
-    report["pct_equal_-100%_kept"] = int((df["pct"] <= -0.999).sum())
+    report["pct_at_most_-99.9%_kept"] = int((df["pct"] <= -0.999).sum())   # из них ровно −100% — next_zero_kept
     report["prev_above_p999_kept"] = int((df["AVG_ARPU_PREV_3M"] > raw["AVG_ARPU_PREV_3M"].quantile(0.999)).sum())
     report["rows_used"] = int(len(df))
     df = df.rename(columns={"tariff_plan_code_from": "tariff_from", "tariff_plan_code_to": "tariff_to"})

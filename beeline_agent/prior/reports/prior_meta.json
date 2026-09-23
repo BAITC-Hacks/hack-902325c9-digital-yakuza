@@ -8,7 +8,7 @@
     "next_zero_kept": 962,
     "removed_prev_below_100": 2118,
     "pct_clipped_at_+300%": 843,
-    "pct_equal_-100%_kept": 1064,
+    "pct_at_most_-99.9%_kept": 1064,
     "prev_above_p999_kept": 15,
     "rows_used": 12699
   },
@@ -51,6 +51,6 @@
     "tariff_9": 0.2276
   },
   "conv_fallback": 0.09221311475409837,
-  "unseen_conv_cv": 0.9293192126348943,
+  "unseen_conv_cv": 0.9292992654803567,
   "budget_value": 10.0
 }

@@ -16,9 +16,9 @@
               агент берёт как есть и на √n не делит; перенос «история → аудитория» — отдельно,
               TRANSFER_SD агента: sd = √(q_se² + TRANSFER_SD²);
       n_obs — число наблюдений, только для справки.
-  PRIOR_PARTS[(from, seg, to)]  = (pct, conv)       — из чего сложен q: чтобы разброс переноса масштабировать
-                                                      конверсией (TRANSFER_SD_PCT × conv): редкий переход не может
-                                                      дать большой эффект
+  PRIOR_PARTS[(from, seg, to)]  = (pct, conv)       — из чего сложен q: чтобы разброс переноса можно было
+                                                      масштабировать долей сменивших (sd ∝ conv): редкий переход
+                                                      не может дать большой эффект
   PRIOR_SCORE[(from, seg, to)]  = (q_level, q_contrast, q_se) — разложение q для «структурного» постериора
       q_level    — часть эффекта от уровня страты (в основном регрессия к среднему, переносится хуже);
       q_contrast — чем эта цель лучше средней цели страты (надёжная часть, split-half 0.92–0.96);
@@ -28,6 +28,9 @@
 
 Как считается:
   * чистка — prior/history.py (дубли, ARPU до < 100, клип Δ% в [-1; 3] как в среде);
+  * режим raw (PRIOR по умолчанию): среднее Δ% и доля перехода считаются ровно функцией среды
+    mock_environment._mock_impact_model по всему файлу — вместе с 6 повторами строк, которые среда тоже
+    считает; поэтому в мок-мире q = истинный эффект до последнего знака. Разбросы и иерархия — по очищенной истории;
   * Δ% = уровень страты (from, seg) + контраст цели (иерархический EB: цель → сегмент×цель → ячейка),
     prior/hier.py; на split-half ошибка ниже, чем у простого среднего и у сжатия к ценовой регрессии;
   * доля перехода: у троек с историей — сглаженная к структуре переходов сегмента (α = 10);
@@ -45,7 +48,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hier  # noqa: E402
-from history import KEYS, ROOT, load_history, pooled_sigma2  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))       # mock_environment — функция среды
+from history import KEYS, ROOT, clean_history, pooled_sigma2  # noqa: E402
 from unseen import package_fit  # noqa: E402
 
 PRIOR_MODE = "raw"           # что кладём в PRIOR (его читает текущий агент):
@@ -71,6 +75,17 @@ def _conversion(hist: pd.DataFrame, cells: pd.DataFrame) -> pd.DataFrame:
     return cells
 
 
+def _env_formula(raw: pd.DataFrame) -> pd.DataFrame:
+    """Среднее Δ% и доля перехода тройки ровно так, как их считает среда (функция организаторов)."""
+    from mock_environment import _mock_impact_model
+    env = _mock_impact_model(raw).rename(columns={"tariff_plan_code_from": "tariff_from",
+                                                   "tariff_plan_code_to": "tariff_to",
+                                                   "arpu_change_pct": "pct_mean", "conversion_rate": "conversion_raw",
+                                                   "count": "n_rows_env"})
+    env["arpu_segment"] = env["arpu_segment"].astype(str)
+    return env[KEYS + ["pct_mean", "conversion_raw", "n_rows_env"]]
+
+
 def _decompose(df: pd.DataFrame, model: dict) -> pd.DataFrame:
     pred = pd.DataFrame([hier.predict(model, f, s, t)
                          for f, s, t in zip(df["tariff_from"], df["arpu_segment"], df["tariff_to"])], index=df.index)
@@ -82,13 +97,21 @@ def _decompose(df: pd.DataFrame, model: dict) -> pd.DataFrame:
     return df
 
 
-def build(hist: pd.DataFrame, tariffs: pd.DataFrame, profile: pd.DataFrame):
+def build(hist: pd.DataFrame, tariffs: pd.DataFrame, profile: pd.DataFrame, raw: "pd.DataFrame | None" = None):
+    """hist — очищенная история (prior/history.py); raw — исходный change_tariff.csv: если передан,
+    pct_mean и conversion_raw (из них q режима raw) считаются ровно формулой среды."""
     model = hier.fit(hist, tariffs)
 
     # --- тройки с историей ---------------------------------------------------------------
     g = hist.groupby(KEYS)["pct"]
     seen = g.agg(n_obs="size", pct_mean="mean", pct_std_raw="std").reset_index()
     seen = _conversion(hist, seen)
+    if raw is not None:
+        env = _env_formula(raw)
+        seen = (seen.drop(columns=["pct_mean", "conversion_raw"])
+                .merge(env, on=KEYS, how="left", validate="one_to_one"))
+        if seen["pct_mean"].isna().any():
+            raise ValueError("формула среды не дала оценку для части троек истории")
     sigma2 = pooled_sigma2(hist)
     dof = (seen["n_obs"] - 1).clip(lower=0)
     seg_var = seen["arpu_segment"].map(sigma2)
@@ -153,7 +176,7 @@ def build(hist: pd.DataFrame, tariffs: pd.DataFrame, profile: pd.DataFrame):
             be[f"be_{ch}_vs_{pch}"] = (cost - pcost) * BUDGET_VALUE / ((m - pm) * be["arpu_mean"].clip(lower=1.0))
 
     meta = {"level": model["level_params"], "tau_contrast": model["tau"], "transfer": model["transfer"],
-            "target_contrast": model["ct"].round(4).to_dict(), "conv_fallback": conv_fallback,
+            "target_contrast": model["target_effect"].round(4).to_dict(), "conv_fallback": conv_fallback,
             "unseen_conv_cv": conv_cv, "budget_value": BUDGET_VALUE}
     return seen, unseen, be, meta
 
@@ -176,7 +199,17 @@ def embed(seen: pd.DataFrame, unseen: pd.DataFrame, agent_path: Path) -> None:
         fmt, cols = ("q", "n_obs", "pct_std"), ["prior_q", "n_obs", "prior_std"]
     else:
         fmt, cols = ("q", "q_se", "n_obs"), ["prior_q", "prior_se", "n_obs"]
-    lines = [START, f"PRIOR_FORMAT = {fmt!r}",
+    lines = [START,
+             "# Априор: что история смен тарифов говорит об эффекте кампании.",
+             "# Ключ везде — (текущий тариф, сегмент ARPU, целевой тариф).",
+             "#   q     — ожидаемый прирост ARPU на один контакт, доля от ARPU абонента, до множителя канала:",
+             "#           q = Δ% ARPU у сменивших тариф × доля сменивших (так считает среда); на канале c ≈ m_c · q",
+             "#   q_se  — стандартная ошибка q по истории, в тех же единицах (размер выборки уже учтён)",
+             "#   n_obs — сколько смен тарифа в истории стоит за оценкой (0 — истории нет, оценка по правилу)",
+             "# PRIOR — тройки с историей; PRIOR_UNSEEN — без истории (осторожная оценка);",
+             "# PRIOR_PARTS — из чего сложен q: (Δ% ARPU, доля сменивших);",
+             "# PRIOR_SCORE — разложение q: (уровень страты, контраст цели, q_se). Подробно — prior/README.md",
+             f"PRIOR_FORMAT = {fmt!r}",
              f"PRIOR_MODE = {PRIOR_MODE!r}   # raw — q как в моке; hier — уровень страты + контраст цели"]
     lines += _dict_lines("PRIOR", seen, cols, f"# (from, seg, to) -> {fmt}: история смен тарифов")
     lines += _dict_lines("PRIOR_UNSEEN", unseen, cols, f"# тройки ячеек аудитории без истории -> {fmt}, n_obs = 0")
@@ -192,10 +225,11 @@ def embed(seen: pd.DataFrame, unseen: pd.DataFrame, agent_path: Path) -> None:
 
 
 def main() -> None:
-    hist, clean_report = load_history()
+    raw = pd.read_csv(ROOT / "data" / "change_tariff.csv")
+    hist, clean_report = clean_history(raw)
     tariffs = pd.read_csv(ROOT / "data" / "dict_tariff.csv")
     profile = pd.read_csv(ROOT / "customer_profile.csv")
-    seen, unseen, be, meta = build(hist, tariffs, profile)
+    seen, unseen, be, meta = build(hist, tariffs, profile, raw=raw)
 
     cols = ["tariff_from", "arpu_segment", "tariff_to", "n_obs", "reliability", "source", "pct_mean", "level",
             "level_sd", "contrast", "contrast_sd", "pct_hat", "pct_sd", "pct_std", "pct_std_raw", "conversion_raw",
