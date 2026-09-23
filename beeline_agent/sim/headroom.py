@@ -12,11 +12,14 @@
                    и разведки при нынешнем устройстве плана;
   known_channels — то же, но канал каждой кампании выбирается из всех четырёх по истинной ценности
                    с учётом бюджета: сколько теряем, пользуясь только SMS и push;
+  known_milp     — (с --milp) лучший план при известных эффектах: sim/optimizer.py, целочисленная оптимизация
+                   с фильтрами трафика/звонков, наборами тарифов и всеми каналами — предел для улучшений планировщика;
   ceiling        — eval.core.upper_bound, доказуемый потолок (без лимита 10 кампаний и стоимости пилотов).
 
 Разрыв ceiling − agent = (known − agent)                  «незнание»: оценка + разведка (пилоты)
                        + (known_channels − known)         «каналы»
-                       + (ceiling − known_channels)       «устройство плана и запас оценки потолка».
+                       + (known_milp − known_channels)    «устройство плана» (с --milp)
+                       + (ceiling − known_milp)           «запас в оценке потолка».
 """
 from __future__ import annotations
 
@@ -110,10 +113,13 @@ def _one_world(task: tuple) -> dict:
     from eval.core import run_strategy, upper_bound
     from eval.strategies import STRATEGIES
 
-    scenario, seed = task
+    scenario, seed, with_milp = task
     world = make_world(seed, scenario)
     makers = {"agent": STRATEGIES["agent"], "history_only": STRATEGIES["history_only"],
               "known": lambda: KnownEffects(world), "known_channels": lambda: KnownEffects(world, all_channels=True)}
+    if with_milp:
+        from sim.optimizer import KnownOptimal
+        makers["known_milp"] = lambda: KnownOptimal(world)
     row = {"scenario": scenario, "seed": seed, "world": world.name, "ceiling": upper_bound(world)}
     for name, make in makers.items():
         res = run_strategy(world, make, env_seed=seed)
@@ -129,10 +135,11 @@ def main():
     ap.add_argument("--worlds", type=int, default=5)
     ap.add_argument("--scenarios", default="all")
     ap.add_argument("--jobs", type=int, default=1)
+    ap.add_argument("--milp", action="store_true", help="добавить лучший план при известных эффектах (дольше)")
     ap.add_argument("--out", default=str(ROOT / "sim" / "reports" / "headroom.csv"))
     args = ap.parse_args()
     scenarios = list_scenarios() if args.scenarios == "all" else args.scenarios.split(",")
-    tasks = [(sc, s) for sc in scenarios for s in range(args.worlds)]
+    tasks = [(sc, s, args.milp) for sc in scenarios for s in range(args.worlds)]
     t0 = time.perf_counter()
     if args.jobs > 1:
         with ProcessPoolExecutor(max_workers=args.jobs) as pool:
@@ -143,7 +150,7 @@ def main():
     ROOT.joinpath("sim", "reports").mkdir(exist_ok=True)
     res.to_csv(args.out, index=False)
 
-    cols = ["history_only", "agent", "known", "known_channels", "ceiling"]
+    cols = ["history_only", "agent", "known", "known_channels"] + (["known_milp"] if args.milp else []) + ["ceiling"]
     med = res.groupby("scenario", sort=False)[cols].median() / 1e6
     share = res[cols].div(res["ceiling"], axis=0).groupby(res["scenario"], sort=False).median() * 100
     pd.set_option("display.width", 200)
@@ -153,8 +160,12 @@ def main():
     print(share.round(0).to_string())
     tot = res[cols].sum()
     gaps = {"незнание (known − agent)": tot["known"] - tot["agent"],
-            "каналы (known_channels − known)": tot["known_channels"] - tot["known"],
-            "план и запас потолка (ceiling − known_channels)": tot["ceiling"] - tot["known_channels"]}
+            "каналы (known_channels − known)": tot["known_channels"] - tot["known"]}
+    if args.milp:
+        gaps["устройство плана (known_milp − known_channels)"] = tot["known_milp"] - tot["known_channels"]
+        gaps["запас оценки потолка (ceiling − known_milp)"] = tot["ceiling"] - tot["known_milp"]
+    else:
+        gaps["план и запас потолка (ceiling − known_channels)"] = tot["ceiling"] - tot["known_channels"]
     whole = tot["ceiling"] - tot["agent"]
     print(f"\nСумма по всем мирам: агент {tot['agent'] / 1e6:,.1f} млн из потолка {tot['ceiling'] / 1e6:,.1f} млн. "
           f"Разрыв {whole / 1e6:,.1f} млн:")
